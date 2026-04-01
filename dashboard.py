@@ -22,30 +22,22 @@ def save_watchlist(tickers):
     with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
         for t in tickers: f.write(f"{t}\n")
 
-# --- 종목명 추출 로직 (야후 차단 우회 및 데이터 기반 추출) ---
+# --- 종목명 추출 로직 (최적화 및 경량화 버전) ---
+@st.cache_data(ttl=3600) # 한 번 가져온 이름은 1시간 동안 메모리에 저장 (속도 향상)
 def get_company_name(ticker):
-    # 1차 시도: 데이터프레임 내 메타데이터 확인 (가장 빠름)
     try:
         stock = yf.Ticker(ticker)
-        # info가 차단되었을 경우를 대비해 fast_info 시도
-        name = stock.fast_info.get('commonName') or stock.info.get('longName')
+        # 1. fast_info 시도 (가장 빠르고 차단율 낮음)
+        info = stock.fast_info
+        if 'longName' in info: return info['longName']
+        if 'shortName' in info: return info['shortName']
+        
+        # 2. 실패 시 기본 info에서 추출 시도
+        name = stock.info.get('longName') or stock.info.get('shortName')
         if name: return name
     except:
         pass
-
-    # 2차 시도: FinanceDataReader의 종목 리스트에서 검색 (미국주식용)
-    try:
-        # 미국 상장 종목 리스트 로드 (최초 1회만 실행됨)
-        df_nasdaq = fdr.StockListing('NASDAQ')
-        df_nyse = fdr.StockListing('NYSE')
-        full_list = pd.concat([df_nasdaq, df_nyse])
-        target = full_list[full_list['Symbol'] == ticker]
-        if not target.empty:
-            return target.iloc[0]['Name']
-    except:
-        pass
-
-    return ticker # 모두 실패 시 티커 반환
+    return ticker # 모두 실패 시 티커 그대로 반환 (멈춤 방지)
 
 def fetch_stock_data(ticker):
     try:
