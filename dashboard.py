@@ -22,22 +22,25 @@ def save_watchlist(tickers):
     with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
         for t in tickers: f.write(f"{t}\n")
 
-# --- 종목명 추출 로직 (최적화 및 경량화 버전) ---
-@st.cache_data(ttl=3600) # 한 번 가져온 이름은 1시간 동안 메모리에 저장 (속도 향상)
+# --- 종목명 추출 로직 (최종 병기: Search 엔진 활용) ---
+@st.cache_data(ttl=86400) # 종목명은 변하지 않으므로 24시간 동안 보관 (속도 극대화)
 def get_company_name(ticker):
     try:
-        stock = yf.Ticker(ticker)
-        # 1. fast_info 시도 (가장 빠르고 차단율 낮음)
-        info = stock.fast_info
-        if 'longName' in info: return info['longName']
-        if 'shortName' in info: return info['shortName']
+        # 1차 시도: yfinance의 가벼운 검색(Search) 기능 활용 (차단율 최저)
+        search = yf.Search(ticker)
+        if search.quotes:
+            # 검색 결과 중 첫 번째 종목의 이름을 반환
+            name = search.quotes[0].get('longname') or search.quotes[0].get('shortname')
+            if name: return name
         
-        # 2. 실패 시 기본 info에서 추출 시도
-        name = stock.info.get('longName') or stock.info.get('shortName')
-        if name: return name
+        # 2차 시도: fast_info (보조)
+        stock = yf.Ticker(ticker)
+        if 'longName' in stock.fast_info: return stock.fast_info['longName']
     except:
         pass
-    return ticker # 모두 실패 시 티커 그대로 반환 (멈춤 방지)
+    
+    # 모든 시도 실패 시 티커 옆에 안내 문구만 추가
+    return f"{ticker} (Info Blocked by Yahoo)"
 
 def fetch_stock_data(ticker):
     try:
