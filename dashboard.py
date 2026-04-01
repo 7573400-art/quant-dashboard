@@ -76,6 +76,19 @@ else:
 st.sidebar.header("📋 관심 종목")
 selected_ticker = st.sidebar.selectbox("종목 선택", watchlist) if watchlist else None
 
+# 신규 종목 추가 UI
+st.sidebar.divider()
+st.sidebar.subheader("➕ 신규 종목 추가")
+new_ticker = st.sidebar.text_input("티커 입력 (예: AAPL, 005930)").upper()
+
+if st.sidebar.button("목록에 추가"):
+    if new_ticker and new_ticker not in watchlist:
+        with open(WATCHLIST_FILE, 'a') as f:
+            f.write(f"\n{new_ticker}")
+        st.sidebar.success(f"'{new_ticker}' 추가 완료! 새로고침(F5) 하세요.")
+    elif new_ticker in watchlist:
+        st.sidebar.warning("이미 목록에 있는 종목입니다.")
+
 if selected_ticker:
     if st.sidebar.button("분석 실행 🚀"):
         data = get_stock_analysis(selected_ticker)
