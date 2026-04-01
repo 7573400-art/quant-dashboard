@@ -22,10 +22,12 @@ def save_watchlist(tickers):
     with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
         for t in tickers: f.write(f"{t}\n")
 
+# 종목명 추출 로직 강화 (에러 회피)
 def get_company_name(ticker):
     try:
         stock = yf.Ticker(ticker)
-        return stock.info.get('longName') or stock.info.get('shortName') or ticker
+        name = stock.info.get('longName') or stock.info.get('shortName')
+        return name if name else ticker
     except:
         return ticker
 
@@ -116,6 +118,9 @@ else:
                 df = fetch_stock_data(selected_ticker)
                 comp_name = get_company_name(selected_ticker)
                 
+                # 티커와 기업명이 같으면(야후 서버 차단 시) 중복 출력 방지
+                display_name = comp_name if comp_name != selected_ticker else "Name Unavailable"
+                
                 if df is not None and not df.empty and len(df) > 200:
                     df = calculate_indicators(df)
                     score = calculate_score(df)
@@ -124,17 +129,16 @@ else:
                     elif score >= 40: color, status = "#faca2b", "관망/분할"
                     else: color, status = "#00d4ff", "매도/제외"
 
-                    # 심플하고 모던한 카드형 스코어보드
                     st.markdown(f"""
                         <div style='background: linear-gradient(145deg, #23252b, #1e1e24); padding: 25px; border-radius: 15px; box-shadow: 0 8px 16px rgba(0,0,0,0.2); border-left: 6px solid {color}; margin-bottom: 20px;'>
                             <div style='display: flex; justify-content: space-between; align-items: center;'>
                                 <div>
-                                    <p style='margin: 0; color: #888; font-size: 14px; font-weight: bold;'>{selected_ticker}</p>
-                                    <h2 style='margin: 0; color: #fff; font-size: 22px;'>{comp_name}</h2>
+                                    <h2 style='margin: 0; color: #fff; font-size: 24px;'>{selected_ticker}</h2>
+                                    <p style='margin: 0; color: #888; font-size: 13px; font-weight: normal; margin-top: 5px;'>{display_name}</p>
                                 </div>
                                 <div style='text-align: right;'>
                                     <h1 style='margin: 0; font-size: 42px; color: {color}; line-height: 1;'>{score}<span style='font-size: 20px;'>점</span></h1>
-                                    <h4 style='margin: 0; color: {color};'>{status}</h4>
+                                    <h4 style='margin: 0; color: {color}; margin-top: 5px;'>{status}</h4>
                                 </div>
                             </div>
                         </div>
