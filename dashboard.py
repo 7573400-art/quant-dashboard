@@ -22,14 +22,30 @@ def save_watchlist(tickers):
     with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
         for t in tickers: f.write(f"{t}\n")
 
-# 종목명 추출 로직 강화 (에러 회피)
+# --- 종목명 추출 로직 (야후 차단 우회 및 데이터 기반 추출) ---
 def get_company_name(ticker):
+    # 1차 시도: 데이터프레임 내 메타데이터 확인 (가장 빠름)
     try:
         stock = yf.Ticker(ticker)
-        name = stock.info.get('longName') or stock.info.get('shortName')
-        return name if name else ticker
+        # info가 차단되었을 경우를 대비해 fast_info 시도
+        name = stock.fast_info.get('commonName') or stock.info.get('longName')
+        if name: return name
     except:
-        return ticker
+        pass
+
+    # 2차 시도: FinanceDataReader의 종목 리스트에서 검색 (미국주식용)
+    try:
+        # 미국 상장 종목 리스트 로드 (최초 1회만 실행됨)
+        df_nasdaq = fdr.StockListing('NASDAQ')
+        df_nyse = fdr.StockListing('NYSE')
+        full_list = pd.concat([df_nasdaq, df_nyse])
+        target = full_list[full_list['Symbol'] == ticker]
+        if not target.empty:
+            return target.iloc[0]['Name']
+    except:
+        pass
+
+    return ticker # 모두 실패 시 티커 반환
 
 def fetch_stock_data(ticker):
     try:
