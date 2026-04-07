@@ -10,10 +10,18 @@ import plotly.graph_objects as go
 from dotenv import load_dotenv
 import requests
 
+def get_env_or_secret(key):
+    val = os.environ.get(key)
+    if val: return val
+    try:
+        return st.secrets[key]
+    except:
+        return None
+
 load_dotenv()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or (st.secrets["GEMINI_API_KEY"] if "GEMINI_API_KEY" in st.secrets else None)
-NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID") or (st.secrets["NAVER_CLIENT_ID"] if "NAVER_CLIENT_ID" in st.secrets else None)
-NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET") or (st.secrets["NAVER_CLIENT_SECRET"] if "NAVER_CLIENT_SECRET" in st.secrets else None)
+GEMINI_API_KEY = get_env_or_secret("GEMINI_API_KEY")
+NAVER_CLIENT_ID = get_env_or_secret("NAVER_CLIENT_ID")
+NAVER_CLIENT_SECRET = get_env_or_secret("NAVER_CLIENT_SECRET")
 
 # --- 1. 페이지 설정 및 보안 인증 ---
 st.set_page_config(page_title="Homin Quant Dashboard", layout="wide")
