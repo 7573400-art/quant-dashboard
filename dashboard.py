@@ -19,7 +19,13 @@ JSON_FILE = 'service_account.json'
 @st.cache_resource
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, scope)
+    if "gcp_service_account" in st.secrets:
+        # Streamlit Cloud 환경
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    else:
+        # 로컬 환경
+        creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, scope)
     return gspread.authorize(creds)
 
 try:
