@@ -165,9 +165,15 @@ def fetch_macro_data():
 
 @st.cache_data(ttl=3600)
 def fetch_top_news():
-    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET: return []
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET: 
+        return [{"summary": "⚠️ 에러: Streamlit Secrets에 NAVER_CLIENT_ID 또는 SECRET이 등록되지 않았습니다.", "link": "https://share.streamlit.io/"}]
+        
     url = "https://openapi.naver.com/v1/search/news.json?query=글로벌 경제 주식&display=3&sort=sim"
-    headers = {"X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET}
+    headers = {
+        "X-Naver-Client-Id": NAVER_CLIENT_ID, 
+        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+        "User-Agent": "Mozilla/5.0"
+    }
     try:
         res = requests.get(url, headers=headers)
         if res.status_code == 200:
@@ -191,11 +197,15 @@ def fetch_top_news():
                         if line and idx < len(raw_news):
                             raw_news[idx]['summary'] = line
                             idx += 1
-                except: pass
+                except Exception as e: 
+                    return [{"summary": f"⚠️ Gemini AI 요약 실패 (API 키 확인 필요): {e}", "link": ""}]
             for n in raw_news:
                 if 'summary' not in n: n['summary'] = n['title']
             return raw_news
-    except: pass
+        else:
+            return [{"summary": f"⚠️ 네이버 뉴스 API 에러 발생 (상태 코드: {res.status_code}) - IP 차단이거나 키 오류일 수 있습니다.", "link": ""}]
+    except Exception as e:
+        return [{"summary": f"⚠️ 뉴스 크롤링 서버 통신 에러: {e}", "link": ""}]
     return []
 
 st.subheader("🌍 글로벌 매크로 지표")
