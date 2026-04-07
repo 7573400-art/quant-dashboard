@@ -3,4 +3,5 @@ finance-datareader
 yfinance
 pandas
 numpy
-plotly
+plotlygspread
+oauth2client
