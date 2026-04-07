@@ -7,6 +7,13 @@ import pandas as pd
 import datetime
 import os
 import plotly.graph_objects as go
+from dotenv import load_dotenv
+import requests
+
+load_dotenv()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or (st.secrets["GEMINI_API_KEY"] if "GEMINI_API_KEY" in st.secrets else None)
+NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID") or (st.secrets["NAVER_CLIENT_ID"] if "NAVER_CLIENT_ID" in st.secrets else None)
+NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET") or (st.secrets["NAVER_CLIENT_SECRET"] if "NAVER_CLIENT_SECRET" in st.secrets else None)
 
 # --- 1. 페이지 설정 및 보안 인증 ---
 st.set_page_config(page_title="Homin Quant Dashboard", layout="wide")
@@ -127,6 +134,78 @@ div[data-testid="metric-container"] {
 
 st.title("📈 퀀트 실시간 통합 대시보드")
 st.caption("Google Sheets와 실시간으로 동기화되는 1인 퀀트 운용 시스템입니다.")
+
+# --- 매크로 지표 및 뉴스 패널 ---
+@st.cache_data(ttl=1800)
+def fetch_macro_data():
+    indices = {"나스닥": "IXIC", "코스피": "KS11", "코스닥": "KQ11", "환율": "USD/KRW", "금": "GC=F", "은": "SI=F", "원유": "CL=F"}
+    results = {}
+    for name, ticker in indices.items():
+        try:
+            if ticker in ["KS11", "KQ11", "USD/KRW"]:
+                df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=10)).strftime('%Y-%m-%d'))
+                curr, prev = df['Close'].iloc[-1], df['Close'].iloc[-2]
+            else:
+                sym = {"IXIC": "^IXIC"}.get(ticker, ticker)
+                tkr = yf.Ticker(sym)
+                hist = tkr.history(period="5d")
+                curr, prev = hist['Close'].iloc[-1], hist['Close'].iloc[-2]
+            pct = ((curr - prev) / prev) * 100
+            results[name] = (curr, pct)
+        except: results[name] = (0, 0)
+    return results
+
+@st.cache_data(ttl=3600)
+def fetch_top_news():
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET: return []
+    url = "https://openapi.naver.com/v1/search/news.json?query=글로벌 경제 주식&display=3&sort=sim"
+    headers = {"X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET}
+    try:
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            items = res.json().get('items', [])
+            raw_news = []
+            for item in items:
+                title = item['title'].replace('<b>', '').replace('</b>', '').replace('&quot;', '"').replace('&apos;', "'")
+                link = item['originallink'] if item.get('originallink') else item['link']
+                raw_news.append({"title": title, "link": link})
+            if GEMINI_API_KEY:
+                import google.generativeai as genai
+                genai.configure(api_key=GEMINI_API_KEY)
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                news_text = "\n".join([n['title'] for n in raw_news])
+                prompt = f"다음 경제 뉴스 3개의 제목을 각 1줄씩 임팩트 있는 평문으로 요약해줘.\n출력예시:\n1. [요약]\n2. [요약]\n3. [요약]\n\n뉴스입력:\n{news_text}"
+                try:
+                    ai_text = model.generate_content(prompt).text.strip().split('\n')
+                    idx = 0
+                    for line in ai_text:
+                        line = line.strip()
+                        if line and idx < len(raw_news):
+                            raw_news[idx]['summary'] = line
+                            idx += 1
+                except: pass
+            for n in raw_news:
+                if 'summary' not in n: n['summary'] = n['title']
+            return raw_news
+    except: pass
+    return []
+
+st.subheader("🌍 글로벌 매크로 지표")
+macro_data = fetch_macro_data()
+if macro_data:
+    cols = st.columns(len(macro_data))
+    for i, (name, (curr, pct)) in enumerate(macro_data.items()):
+        val_str = f"${curr:,.2f}" if name in ["나스닥", "금", "은", "원유"] else f"{curr:,.2f}"
+        delta_str = f"{pct:+.2f}%"
+        cols[i].metric(name, val_str, delta_str)
+
+st.markdown("<br>", unsafe_allow_html=True)
+news_data = fetch_top_news()
+if news_data:
+    st.markdown("##### 📰 오늘의 핵심 경제 뉴스 (AI 요약)")
+    for n in news_data:
+        st.markdown(f"- **{n['summary']}** [🔗기사원문]({n['link']})")
+st.divider()
 
 if tickers:
     selected_ticker = st.selectbox("상세 분석 종목 선택", tickers)

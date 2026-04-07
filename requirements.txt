@@ -6,3 +6,7 @@ numpy
 plotly
 gspread
 oauth2client
+google-generativeai
+requests
+
+python-dotenv
