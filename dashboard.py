@@ -65,6 +65,15 @@ def get_company_name(ticker):
 def get_stock_analysis(ticker):
     try:
         df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'))
+        
+        # [해외망 차단 우회] Streamlit Cloud에서 한국 증시 조회가 차단(403)되어 비어있을 경우 yfinance를 통해 우회 (코스피/코스닥)
+        if (df is None or len(df) == 0) and str(ticker).isdigit():
+            import yfinance as yf
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d')
+            df = yf.download(f"{ticker}.KS", start=start_date, progress=False)
+            if df.empty:
+                df = yf.download(f"{ticker}.KQ", start=start_date, progress=False)
+                
         df = df.dropna(subset=['Close']) # 주말/휴장일 NaN 결측치 보정
         if len(df) < 21: return None # 최근 상장 종목(최소 20일)도 표출되도록 완화
         
