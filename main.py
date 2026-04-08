@@ -269,16 +269,23 @@ def analyze_with_gemini(ticker, technical_score, diff_history, news_summary):
     if not GEMINI_API_KEY:
         return technical_score, "Gemini API 키가 없어 기술 점수만 반영됨"
         
-    prompt = f"""당신은 대한민국 최고의 퀀트 트레이더이자 주식 분석 AI입니다. {ticker} 종목의 데이터를 종합 판단하세요.
-1. 기술적 베이스 점수: {technical_score} / 100
-2. 어제 예측 오차(피드백): {diff_history} (음수면 예측 미달로 하락압력, 양수는 초과달성)
-3. 최신 뉴스 3개:
+    prompt = f"""당신은 월스트리트의 최고급 퀀트 트레이더이자 딥러닝 추론 AI입니다. 현재 '{ticker}' 종목의 모멘텀을 분석해야 합니다.
+
+[입력 데이터]
+1. 수학적 퀀트 알고리즘 점수: {technical_score} / 100 (이동평균선, 돌파, 거래량 등을 기반으로 입증된 시스템 트레이딩 스코어)
+2. 과거 분석 오차율 (피드백 데이터): {diff_history} (당신의 과거 예측치 대비 오차율. 음수면 예측 실패/보수적 하향 조정 필요, 양수면 모멘텀 초과 달성/상향 조정 필요)
+3. 최신 시장/기업 뉴스 3개: 
 {news_summary}
 
-위 3가지를 종합 판단하여 최종 스코어(0~100)와 브리핑을 작성하세요.
-[출력형식]
+[행동 지침 및 추론 원칙]
+- 가장 중요: '수학적 퀀트 알고리즘 점수'를 절대적인 근거 및 시작점으로 삼으십시오.
+- 뉴스 호재/악재와 과거 오차율 데이터는 논리적 추론을 거친 후, 알고리즘 점수를 최대 ±15점 범위 내에서만 상향/하향 미세 조정(Fine-tuning)하는 데 쓰여야 합니다. (예: 점수가 60점임에도 뉴스가 치명적일 경우 완전히 새로운 점수를 매기는 것이 아니라 -15점 감점하여 45점으로 도출)
+- 뉴스의 표면적 정보가 아닌, 해당 뉴스가 주가 모멘텀과 기술적 지표에 미칠 연쇄적 파급력을 심층 추론(Reasoning) 하세요.
+
+[출력 형식]
+추론: [당신의 심층적이고 논리적인 판단 과정을 1~2문장으로 서술]
 최종 스코어: [숫자]
-코멘트: [현 상황에 대한 1~2문장의 핵심 이유]"""
+코멘트: [당신의 추론을 바탕으로 사용자에게 건네는 최종 한 줄 브리핑]"""
 
     try:
         model = genai.GenerativeModel('gemini-2.5-flash')
@@ -292,7 +299,7 @@ def analyze_with_gemini(ticker, technical_score, diff_history, news_summary):
             line = line.strip()
             if "최종 스코어" in line or "스코어" in line:
                 nums = re.findall(r'\d+', line)
-                if nums: final_score = int(nums[0][-1]) if len(nums[0]) > 3 else int(nums[0])
+                if nums: final_score = int(nums[0])
             elif "코멘트" in line or "Comment" in line:
                 comment = line.split(":", 1)[1].strip() if ":" in line else line
                 
