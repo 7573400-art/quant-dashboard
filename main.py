@@ -223,7 +223,8 @@ def get_company_name(ticker):
 def get_recent_news(ticker, name=""):
     search_query = name if name else ticker
     if ticker.isdigit():
-        url = f"https://news.google.com/rss/search?q={search_query}&hl=ko&gl=KR&ceid=KR:ko"
+        # 한국 주식의 경우 "종목명+주식" 키워드 사용 및 최근 7일(when:7d) 기사로 필터링
+        url = f"https://news.google.com/rss/search?q={search_query}+주식+when:7d&hl=ko&gl=KR&ceid=KR:ko"
         try:
             res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
             root = ET.fromstring(res.content)
@@ -293,17 +294,19 @@ def analyze_with_gemini(ticker, technical_score, diff_history, news_summary):
         text = response.text.strip()
         
         final_score = technical_score
-        comment = ""
         
-        for line in text.split('\n'):
-            line = line.strip()
-            if "최종 스코어" in line or "스코어" in line:
-                nums = re.findall(r'\d+', line)
-                if nums: final_score = int(nums[0])
-            elif "코멘트" in line or "Comment" in line:
-                comment = line.split(":", 1)[1].strip() if ":" in line else line
-                
-        if not comment: comment = text.replace('\n', ' ')
+        # 1. 정규식(Regex)을 사용한 스코어 안전 파싱 (코멘트 내용 속 숫자가 스코어로 오인되는 것 방지)
+        score_match = re.search(r'(?:최종\s*)?스코어\s*[:-]?\s*(?:\*\*)?\s*(\d+)', text)
+        if score_match:
+            final_score = int(score_match.group(1))
+            
+        # 2. 코멘트 안전 파싱 (코멘트: 이후의 모든 문자열을 추출)
+        comment_match = re.search(r'코멘트\s*[:-]?\s*(.*)', text, flags=re.DOTALL)
+        if comment_match:
+            comment = comment_match.group(1).strip()
+        else:
+            comment = text.replace('\n', ' ')
+            
         return final_score, comment
     except Exception as e:
         return technical_score, f"AI 분석 에러: {e}"
