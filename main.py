@@ -315,7 +315,7 @@ def get_stock_info(ticker, log_data=None, fast_mode=False):
     try:
         df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'))
         df = df.dropna(subset=['Close']) # 주말/장전시간 NaN 결측치 보정
-        if len(df) < 200: return None
+        if len(df) < 21: return None # 최근 상장 종목(최소 20일)도 표출되도록 완화
         
         df['SMA_20'] = df['Close'].rolling(20).mean()
         df['SMA_50'] = df['Close'].rolling(50).mean()

@@ -65,7 +65,7 @@ def get_stock_analysis(ticker):
     try:
         df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'))
         df = df.dropna(subset=['Close']) # 주말/휴장일 NaN 결측치 보정
-        if len(df) < 200: return None
+        if len(df) < 21: return None # 최근 상장 종목(최소 20일)도 표출되도록 완화
         
         # 지표 계산
         df['SMA_20'] = df['Close'].rolling(20).mean()
