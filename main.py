@@ -150,7 +150,7 @@ def get_macro_data():
     return "\n".join(lines) if lines else "매크로 지표 서버 접근 실패"
 
 def get_news_report():
-    url = "https://news.google.com/rss/search?q=글로벌+경제+주식&hl=ko&gl=KR&ceid=KR:ko"
+    url = "https://news.google.com/rss/search?q=글로벌+경제+주식+when:1d&hl=ko&gl=KR&ceid=KR:ko"
     try:
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
         if res.status_code == 200:
