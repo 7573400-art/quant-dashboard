@@ -11,13 +11,12 @@ from oauth2client.service_account import ServiceAccountCredentials
 import google.generativeai as genai
 import requests
 import re
+import xml.etree.ElementTree as ET
 
 load_dotenv()
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID")
-NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -148,21 +147,18 @@ def get_macro_data():
     return "\n".join(lines) if lines else "매크로 지표 서버 접근 실패"
 
 def get_news_report():
-    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
-        return "국내 뉴스 API 키(Naver)가 없어 수집 생략"
-        
-    url = "https://openapi.naver.com/v1/search/news.json?query=글로벌 경제 주식&display=3&sort=sim"
-    headers = {"X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET}
+    url = "https://news.google.com/rss/search?q=글로벌+경제+주식&hl=ko&gl=KR&ceid=KR:ko"
     try:
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
         if res.status_code == 200:
-            items = res.json().get('items', [])
+            root = ET.fromstring(res.content)
+            items = root.findall('.//item')
             if not items: return "최근 관련 뉴스 없음"
             
             raw_news = []
-            for item in items:
-                title = item['title'].replace('<b>', '').replace('</b>', '').replace('&quot;', '"').replace('&apos;', "'")
-                link = item['originallink'] if item.get('originallink') else item['link']
+            for item in items[:3]:
+                title = item.find('title').text
+                link = item.find('link').text
                 raw_news.append({"title": title, "link": link})
                 
             if GEMINI_API_KEY:
@@ -224,26 +220,19 @@ def get_company_name(ticker):
 def get_recent_news(ticker, name=""):
     search_query = name if name else ticker
     if ticker.isdigit():
-        if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
-            return "국내 뉴스 API 키(Naver)가 없어 수집 생략"
-            
-        url = f"https://openapi.naver.com/v1/search/news.json?query={search_query}&display=3&sort=date"
-        headers = {
-            "X-Naver-Client-Id": NAVER_CLIENT_ID,
-            "X-Naver-Client-Secret": NAVER_CLIENT_SECRET
-        }
+        url = f"https://news.google.com/rss/search?q={search_query}&hl=ko&gl=KR&ceid=KR:ko"
         try:
-            res = requests.get(url, headers=headers)
-            if res.status_code == 200:
-                items = res.json().get('items', [])
-                if not items: return "최근 관련 뉴스 없음"
-                news_text = []
-                for item in items:
-                    title = item['title'].replace('<b>', '').replace('</b>', '').replace('&quot;', '"')
-                    news_text.append(f"- {title}")
-                return "\n".join(news_text)
-        except: pass
-        return "뉴스 검색 오류"
+            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            root = ET.fromstring(res.content)
+            items = root.findall('.//item')
+            if not items: return "최근 관련 뉴스 없음"
+            news_text = []
+            for item in items[:3]:
+                title = item.find('title').text
+                news_text.append(f"- {title}")
+            return "\n".join(news_text)
+        except Exception as e: 
+            return f"뉴스 검색 오류: {e}"
     else:
         try:
             import yfinance as yf

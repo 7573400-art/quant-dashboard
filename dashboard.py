@@ -9,6 +9,7 @@ import os
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 import requests
+import xml.etree.ElementTree as ET
 
 def get_env_or_secret(key):
     val = os.environ.get(key)
@@ -20,8 +21,6 @@ def get_env_or_secret(key):
 
 load_dotenv()
 GEMINI_API_KEY = get_env_or_secret("GEMINI_API_KEY")
-NAVER_CLIENT_ID = get_env_or_secret("NAVER_CLIENT_ID")
-NAVER_CLIENT_SECRET = get_env_or_secret("NAVER_CLIENT_SECRET")
 
 # --- 1. 페이지 설정 및 보안 인증 ---
 st.set_page_config(page_title="Homin Quant Dashboard", layout="wide")
@@ -165,24 +164,20 @@ def fetch_macro_data():
 
 @st.cache_data(ttl=3600)
 def fetch_top_news():
-    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET: 
-        return [{"summary": "⚠️ 에러: Streamlit Secrets에 NAVER_CLIENT_ID 또는 SECRET이 등록되지 않았습니다.", "link": "https://share.streamlit.io/"}]
-        
-    url = "https://openapi.naver.com/v1/search/news.json?query=글로벌 경제 주식&display=3&sort=sim"
-    headers = {
-        "X-Naver-Client-Id": NAVER_CLIENT_ID, 
-        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
-        "User-Agent": "Mozilla/5.0"
-    }
+    url = "https://news.google.com/rss/search?q=글로벌+경제+주식&hl=ko&gl=KR&ceid=KR:ko"
     try:
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
         if res.status_code == 200:
-            items = res.json().get('items', [])
+            root = ET.fromstring(res.content)
+            items = root.findall('.//item')
+            if not items: return [{"summary": "최근 관련 뉴스 없음", "link": ""}]
+            
             raw_news = []
-            for item in items:
-                title = item['title'].replace('<b>', '').replace('</b>', '').replace('&quot;', '"').replace('&apos;', "'")
-                link = item['originallink'] if item.get('originallink') else item['link']
+            for item in items[:3]:
+                title = item.find('title').text
+                link = item.find('link').text
                 raw_news.append({"title": title, "link": link})
+                
             if GEMINI_API_KEY:
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
@@ -198,15 +193,15 @@ def fetch_top_news():
                             raw_news[idx]['summary'] = line
                             idx += 1
                 except Exception as e: 
-                    return [{"summary": f"⚠️ Gemini AI 요약 실패 (API 키 확인 필요): {e}", "link": ""}]
+                    return [{"summary": f"⚠️ Gemini AI 요약 실패: {e}", "link": ""}]
+                    
             for n in raw_news:
                 if 'summary' not in n: n['summary'] = n['title']
             return raw_news
         else:
-            return [{"summary": f"⚠️ 네이버 뉴스 API 에러 발생 (상태 코드: {res.status_code}) - IP 차단이거나 키 오류일 수 있습니다.", "link": ""}]
+            return [{"summary": f"⚠️ 구글 뉴스 API 에러 (상태코드: {res.status_code})", "link": ""}]
     except Exception as e:
         return [{"summary": f"⚠️ 뉴스 크롤링 서버 통신 에러: {e}", "link": ""}]
-    return []
 
 st.subheader("🌍 글로벌 매크로 지표")
 macro_data = fetch_macro_data()
