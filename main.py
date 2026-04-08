@@ -120,13 +120,16 @@ def get_macro_data():
         return 0, 0
 
     indices = {
+        "🇺🇸 S&P 500": "^GSPC",
         "🇺🇸 나스닥": "IXIC",
         "🇰🇷 코스피": "KS11",
         "🇰🇷 코스닥": "KQ11",
         "💵 환율(원/달러)": "USD/KRW",
         "🥇 금": "GC=F",
-        "🪙 은": "SI=F",
-        "🛢️ WTI 원유": "CL=F"
+        "🛢️ WTI 원유": "CL=F",
+        "₿ 비트코인": "BTC-USD",
+        "📈 국채 10년물": "^TNX",
+        "😨 VIX 공포지수": "^VIX"
     }
     
     lines = []
@@ -135,10 +138,10 @@ def get_macro_data():
         if curr == 0: continue
         
         icon = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
-        if "나스닥" in name or "금" in name or "은" in name or "원유" in name:
-            val_fmt = f"${curr:,.2f}"
-        elif "환율" in name or "코스" in name:
-            val_fmt = f"{curr:,.2f}"
+        if "나스닥" in name or "S&P" in name or "금" in name or "원유" in name or "비트코인" in name:
+            val_fmt = f"${curr:,.2f}" if "비트코인" not in name else f"${curr:,.0f}"
+        elif "국채" in name or "VIX" in name:
+            val_fmt = f"{curr:.2f}"
         else:
             val_fmt = f"{curr:,.2f}"
             

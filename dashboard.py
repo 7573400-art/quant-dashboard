@@ -145,7 +145,10 @@ st.caption("Google Sheets와 실시간으로 동기화되는 1인 퀀트 운용 
 # --- 매크로 지표 및 뉴스 패널 ---
 @st.cache_data(ttl=1800)
 def fetch_macro_data():
-    indices = {"나스닥": "IXIC", "코스피": "KS11", "코스닥": "KQ11", "환율": "USD/KRW", "금": "GC=F", "은": "SI=F", "원유": "CL=F"}
+    indices = {
+        "S&P 500": "^GSPC", "나스닥": "IXIC", "코스피": "KS11", "코스닥": "KQ11", "환율": "USD/KRW",
+        "금": "GC=F", "원유": "CL=F", "비트코인": "BTC-USD", "국채 10년물": "^TNX", "VIX 공포지수": "^VIX"
+    }
     results = {}
     for name, ticker in indices.items():
         try:
@@ -206,11 +209,20 @@ def fetch_top_news():
 st.subheader("🌍 글로벌 매크로 지표")
 macro_data = fetch_macro_data()
 if macro_data:
-    cols = st.columns(len(macro_data))
+    cols1 = st.columns(5)
+    cols2 = st.columns(5)
+    all_cols = cols1 + cols2
     for i, (name, (curr, pct)) in enumerate(macro_data.items()):
-        val_str = f"${curr:,.2f}" if name in ["나스닥", "금", "은", "원유"] else f"{curr:,.2f}"
+        if name in ["나스닥", "S&P 500", "금", "원유", "비트코인"]:
+            val_str = f"${curr:,.2f}" if name != "비트코인" else f"${curr:,.0f}"
+        elif "국채" in name or "VIX" in name:
+            val_str = f"{curr:,.2f}"
+        else:
+            val_str = f"{curr:,.2f}"
+            
         delta_str = f"{pct:+.2f}%"
-        cols[i].metric(name, val_str, delta_str)
+        if i < len(all_cols):
+            all_cols[i].metric(name, val_str, delta_str)
 
 st.markdown("<br>", unsafe_allow_html=True)
 news_data = fetch_top_news()
