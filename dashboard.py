@@ -23,7 +23,7 @@ load_dotenv()
 GEMINI_API_KEY = get_env_or_secret("GEMINI_API_KEY")
 
 # --- 1. 페이지 설정 및 보안 인증 ---
-st.set_page_config(page_title="Homin Quant Dashboard", layout="wide")
+st.set_page_config(page_title="My Quant Dashboard", layout="wide")
 
 # 구글 시트 인증 설정
 # 로컬(Mac mini)에서는 service_account.json 파일을 읽고, 
@@ -198,7 +198,29 @@ def fetch_top_news():
             for item in items[:3]:
                 title = item.find('title').text
                 link = item.find('link').text
-                raw_news.append({"title": title, "link": link})
+                
+                # 시간 파싱
+                pub_date = item.find('pubDate')
+                time_str = ""
+                if pub_date is not None:
+                    import email.utils
+                    import datetime
+                    try:
+                        dt = email.utils.parsedate_to_datetime(pub_date.text)
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        diff = now - dt
+                        if diff.total_seconds() < 3600:
+                            mins = int(diff.total_seconds() // 60)
+                            time_str = f" ({mins}분 전)"
+                        elif diff.total_seconds() < 86400:
+                            hrs = int(diff.total_seconds() // 3600)
+                            time_str = f" ({hrs}시간 전)"
+                        else:
+                            days = int(diff.total_seconds() // 86400)
+                            time_str = f" ({days}일 전)"
+                    except: pass
+                
+                raw_news.append({"title": title, "link": link, "time_str": time_str})
                 
             if GEMINI_API_KEY:
                 import google.generativeai as genai
@@ -212,13 +234,13 @@ def fetch_top_news():
                     for line in ai_text:
                         line = line.strip()
                         if line and idx < len(raw_news):
-                            raw_news[idx]['summary'] = line
+                            raw_news[idx]['summary'] = f"{line}{raw_news[idx]['time_str']}"
                             idx += 1
                 except Exception as e: 
                     return [{"summary": f"⚠️ Gemini AI 요약 실패: {e}", "link": ""}]
                     
             for n in raw_news:
-                if 'summary' not in n: n['summary'] = n['title']
+                if 'summary' not in n: n['summary'] = f"{n['title']}{n['time_str']}"
             return raw_news
         else:
             return [{"summary": f"⚠️ 구글 뉴스 API 에러 (상태코드: {res.status_code})", "link": ""}]

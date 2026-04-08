@@ -46,7 +46,7 @@ def send_welcome(message):
     markup.add(btn_report, btn_score, btn_review, btn_dash)
     
     welcome_text = (
-        "🤖 *Homin Quant Bot에 오신 것을 환영합니다!*\n\n"
+        "🤖 *My Quant Bot에 오신 것을 환영합니다!*\n\n"
         "아래 메뉴 버튼을 누르시거나 명령어를 직접 입력해주세요.\n\n"
         "📊 `/score` : 관심종목 전체 스코어 및 AI 진단\n"
         "🌍 `/report` : 글로벌 매크로 지표 & 메인 뉴스 AI 요약\n"
@@ -162,7 +162,29 @@ def get_news_report():
             for item in items[:3]:
                 title = item.find('title').text
                 link = item.find('link').text
-                raw_news.append({"title": title, "link": link})
+                
+                # 시간 파싱
+                pub_date = item.find('pubDate')
+                time_str = ""
+                if pub_date is not None:
+                    import email.utils
+                    import datetime
+                    try:
+                        dt = email.utils.parsedate_to_datetime(pub_date.text)
+                        now = datetime.datetime.now(datetime.timezone.utc)
+                        diff = now - dt
+                        if diff.total_seconds() < 3600:
+                            mins = int(diff.total_seconds() // 60)
+                            time_str = f" ({mins}분 전)"
+                        elif diff.total_seconds() < 86400:
+                            hrs = int(diff.total_seconds() // 3600)
+                            time_str = f" ({hrs}시간 전)"
+                        else:
+                            days = int(diff.total_seconds() // 86400)
+                            time_str = f" ({days}일 전)"
+                    except: pass
+                
+                raw_news.append({"title": title, "link": link, "time_str": time_str})
                 
             if GEMINI_API_KEY:
                 model = genai.GenerativeModel('gemini-2.5-flash')
@@ -184,7 +206,8 @@ def get_news_report():
                     for line in ai_text:
                         line = line.strip()
                         if line and idx < len(raw_news):
-                            final_lines.append(f"{line}\n   🔗 [{raw_news[idx]['title']}]({raw_news[idx]['link']})")
+                            time_s = raw_news[idx]['time_str']
+                            final_lines.append(f"{line}{time_s}\n   🔗 [{raw_news[idx]['title']}]({raw_news[idx]['link']})")
                             idx += 1
                         elif line:
                             final_lines.append(line)
@@ -192,7 +215,7 @@ def get_news_report():
                     return "\n\n".join(final_lines)
                 except: pass
             
-            return "\n\n".join([f"- {n['title']}\n   🔗 [원문 링크]({n['link']})" for n in raw_news])
+            return "\n\n".join([f"- {n['title']}{n['time_str']}\n   🔗 [원문 링크]({n['link']})" for n in raw_news])
     except: pass
     return "뉴스 수집 실패"
 
