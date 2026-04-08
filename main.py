@@ -308,7 +308,7 @@ def analyze_with_gemini(ticker, technical_score, diff_history, news_summary):
     except Exception as e:
         return technical_score, f"AI 분석 에러: {e}"
 
-def get_stock_info(ticker, log_data=None):
+def get_stock_info(ticker, log_data=None, fast_mode=False):
     try:
         df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'))
         if len(df) < 200: return None
@@ -339,6 +339,9 @@ def get_stock_info(ticker, log_data=None):
         # 50점을 기준으로, 1점당 0.3%씩 가격이 비례하여 움직임 (최대 상하 15% 밴드)
         target_multiplier = 1 + ((score - 50) / 50) * 0.15
         target_price = curr_price * target_multiplier
+        
+        if fast_mode and score < 55:
+            return {'score': score, 'curr_price': curr_price, 'change_pct': change_pct, 'change_val': change_val, 'target_price': target_price, 'ai_comment': "패스 (베이스 모멘텀 점수 55점 미달)"}
         
         # AI 복합 스코어링 (뉴스 및 과거 오차 학습 반영)
         name = get_company_name(ticker)
@@ -468,7 +471,8 @@ def send_review(message):
     bot.send_message(message.chat.id, "\n".join(report), parse_mode="Markdown")
 
 def auto_check_buy_signals():
-    """15분마다 백그라운드에서 실행되며 강력 매수 신호 발생 시 텔레그램으로 보냅니다."""
+    """1분마다 백그라운드에서 실행되며 강력 매수 신호 발생 시 알람 중복을 최소화하여 텔레그램으로 보냅니다."""
+    last_alert_scores = {}
     while True:
         try:
             try:
@@ -489,8 +493,23 @@ def auto_check_buy_signals():
                 
             buy_signals = []
             for t in tickers:
-                data = get_stock_info(t, log_data)
-                if data and data['score'] >= 70:
+                data = get_stock_info(t, log_data, fast_mode=True)
+                if not data: continue
+                
+                score = data['score']
+                
+                # 점수가 역치(70) 아래로 떨어지면 리셋하여 나중에 다시 70을 돌파할 때 알림을 주도록 함
+                if score < 70:
+                    if t in last_alert_scores:
+                        del last_alert_scores[t]
+                    continue
+                    
+                prev_alert_score = last_alert_scores.get(t, 0)
+                
+                # 70점 이상이면서 동시에 이전에 알림을 보냈던 점수보다 높을 때만 신호 발생 (중복 방지)
+                if score >= 70 and score > prev_alert_score:
+                    last_alert_scores[t] = score
+                    
                     curr_fmt = f"₩{int(data['curr_price']):,}" if t.isdigit() else f"${data['curr_price']:.2f}"
                     target_fmt = f"₩{int(data['target_price']):,}" if t.isdigit() else f"${data['target_price']:.2f}"
                     
@@ -499,21 +518,21 @@ def auto_check_buy_signals():
                     elif chg_pct < 0: chg_str = f"🔻{chg_pct:+.2f}%"
                     else: chg_str = f"➖0.00%"
 
-                    buy_signals.append(f"🚀 *{t}*: 강력 매수 추천 (AI 스코어: {data['score']}점)\n   - 현재: {curr_fmt} ({chg_str})\n   - 🤖 코멘트: {data.get('ai_comment','')}")
+                    buy_signals.append(f"🚀 *{t}*: 강력 매수 추천 (AI 스코어: {score}점)\n   - 현재: {curr_fmt} ({chg_str})\n   - 🤖 코멘트: {data.get('ai_comment','')}")
             
             if buy_signals and CHAT_ID:
-                msg = "🔔 *[15분 자동 탐색] 매수 신호가 포착되었습니다!*\n\n" + "\n\n".join(buy_signals)
+                msg = "🔔 *[1분 실시간 감시] 신규 매수 시그널 포착!*\n\n" + "\n\n".join(buy_signals)
                 bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
                 
         except Exception as e:
             print(f"자동 확인 도중 에러가 발생했습니다: {e}")
             
-        time.sleep(15 * 60) # 15분(900초) 대기 후 반복
+        time.sleep(60) # 1분(60초) 대기 후 반복
 
 if __name__ == "__main__":
-    print("텔레그램 수동 응답 봇 및 15분 백그라운드 탐색기를 시작합니다...")
+    print("텔레그램 수동 응답 봇 및 1분 단위 초고속 백그라운드 탐색기를 시작합니다...")
     
-    # 백그라운드 쓰레드로 15분 자동 체크 로직 구동
+    # 백그라운드 쓰레드로 1분 자동 체크 로직 구동
     if CHAT_ID:
         scheduler_thread = threading.Thread(target=auto_check_buy_signals, daemon=True)
         scheduler_thread.start()
