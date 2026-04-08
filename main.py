@@ -487,6 +487,7 @@ def auto_check_buy_signals():
     last_alert_scores = {}
     while True:
         try:
+            print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] 🔍 1분 단위 초고속 모니터링 가동 시작...")
             try:
                 tickers = sheet_watch.col_values(1)[1:]
             except Exception as e:
@@ -535,6 +536,9 @@ def auto_check_buy_signals():
             if buy_signals and CHAT_ID:
                 msg = "🔔 *[1분 실시간 감시] 신규 매수 시그널 포착!*\n\n" + "\n\n".join(buy_signals)
                 bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
+                print(f"텔레그램 매수 시그널 발송 완료! ({len(buy_signals)} 종목)")
+            else:
+                print("상태 유지 중 ➜ 기존 감시 점수를 초과한 새로운 돌파/매수 신호 없음.")
                 
         except Exception as e:
             print(f"자동 확인 도중 에러가 발생했습니다: {e}")
