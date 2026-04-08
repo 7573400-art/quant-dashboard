@@ -61,6 +61,7 @@ def get_company_name(ticker):
     except: pass
     return ticker
 
+@st.cache_data(ttl=180) # 3분마다 캐시 갱신 (Rate Limit 방지)
 def get_stock_analysis(ticker):
     try:
         df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'))
@@ -342,6 +343,8 @@ for t in tickers:
         })
 if summary_data:
     st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+else:
+    st.warning("⚠️ 종목 데이터를 불러오지 못했습니다. API 호출 제한(Rate Limit)이 발생했을 수 있습니다. 잠시 후 새로고침해주세요.")
 
 # --- 6. 아침 알림 로그 확인 (Log 탭 연동) ---
 st.divider()
