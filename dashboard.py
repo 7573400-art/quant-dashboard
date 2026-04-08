@@ -64,6 +64,7 @@ def get_company_name(ticker):
 def get_stock_analysis(ticker):
     try:
         df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'))
+        df = df.dropna(subset=['Close']) # 주말/휴장일 NaN 결측치 보정
         if len(df) < 200: return None
         
         # 지표 계산
@@ -74,6 +75,14 @@ def get_stock_analysis(ticker):
         
         latest, prev = df.iloc[-1], df.iloc[-2]
         curr_price = latest['Close']
+        
+        # [실시간 시세 보정] 프리장/애프터장 반영 (미국 주식 한정)
+        if not str(ticker).isdigit():
+            try:
+                import yfinance as yf
+                curr_price = float(yf.Ticker(ticker).fast_info.last_price)
+            except: pass
+            
         prev_price = prev['Close']
         change_val = curr_price - prev_price
         change_pct = (change_val / prev_price) * 100

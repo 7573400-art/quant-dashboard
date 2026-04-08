@@ -314,6 +314,7 @@ def analyze_with_gemini(ticker, technical_score, diff_history, news_summary):
 def get_stock_info(ticker, log_data=None, fast_mode=False):
     try:
         df = fdr.DataReader(ticker, start=(datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y-%m-%d'))
+        df = df.dropna(subset=['Close']) # 주말/장전시간 NaN 결측치 보정
         if len(df) < 200: return None
         
         df['SMA_20'] = df['Close'].rolling(20).mean()
@@ -324,6 +325,14 @@ def get_stock_info(ticker, log_data=None, fast_mode=False):
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         curr_price = latest['Close']
+        
+        # [실시간 시세 보정] 프리장/애프터장 반영 (미국 주식 한정)
+        if not str(ticker).isdigit():
+            try:
+                import yfinance as yf
+                curr_price = float(yf.Ticker(ticker).fast_info.last_price)
+            except: pass
+            
         prev_price = prev['Close']
         change_val = curr_price - prev_price
         change_pct = (change_val / prev_price) * 100
