@@ -234,7 +234,32 @@ def send_report(message):
     )
     bot.send_message(message.chat.id, report_msg, parse_mode="Markdown", disable_web_page_preview=True)
 
+krx_map_cache = {}
+last_krx_fetch = 0
+
+def get_krx_mapping():
+    global krx_map_cache, last_krx_fetch
+    import time
+    now_ts = time.time()
+    
+    # 24시간 캐싱 처리
+    if not krx_map_cache or (now_ts - last_krx_fetch > 86400):
+        try:
+            df = fdr.StockListing('KRX')
+            krx_map_cache = dict(zip(df['Code'], df['Name']))
+            last_krx_fetch = now_ts
+        except:
+            krx_map_cache = {}
+            
+    return krx_map_cache
+
 def get_company_name(ticker):
+    # 한국 증시 종목인 경우 KRX 맵핑에서 이름 확인
+    if str(ticker).isdigit():
+        krx_map = get_krx_mapping()
+        if str(ticker) in krx_map:
+            return krx_map[str(ticker)]
+            
     try:
         import yfinance as yf
         search = yf.Search(ticker)
