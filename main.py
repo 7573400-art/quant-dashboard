@@ -354,6 +354,25 @@ def get_stock_info(ticker, log_data=None, fast_mode=False):
         df['SMA_200'] = df['Close'].rolling(200).mean()
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         
+        # 추가 추세/모멘텀 지표 계산 (RSI, MACD, ATR)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        high_low = df['High'] - df['Low']
+        high_close = (df['High'] - df['Close'].shift()).abs()
+        low_close = (df['Low'] - df['Close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['ATR'] = true_range.rolling(14).mean()
+        
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         curr_price = latest['Close']
@@ -370,19 +389,35 @@ def get_stock_info(ticker, log_data=None, fast_mode=False):
         change_pct = (change_val / prev_price) * 100
         score = 0
         
-        # 퀀트 스코어 계산
-        if curr_price > latest['SMA_20']: score += 10
-        if latest['SMA_20'] > latest['SMA_50']: score += 10
-        if latest['SMA_50'] > latest['SMA_200']: score += 20
-        if latest['RVOL'] >= 1.5: score += 30
-        elif latest['RVOL'] >= 1.0: score += 15
-        if curr_price > prev['High']: score += 15
-        if curr_price > latest['Open']: score += 15
+        # 스코어링 최적화 (100점 만점)
+        # 1. 이동평균 추세 (30점)
+        if latest['SMA_20'] > latest['SMA_50']: score += 15
+        if latest['SMA_50'] > latest['SMA_200']: score += 15
         
-        # 📌 선생님 요청: 스코어 비례형 단기 목표가 (Target Price) 계산
-        # 50점을 기준으로, 1점당 0.3%씩 가격이 비례하여 움직임 (최대 상하 15% 밴드)
-        target_multiplier = 1 + ((score - 50) / 50) * 0.15
-        target_price = curr_price * target_multiplier
+        # 2. RSI 모멘텀/과매수 필터 (20점)
+        rsi = latest['RSI']
+        if 40 <= rsi <= 70: score += 20
+        elif rsi > 75: score -= 10 # 과매수 페널티
+        
+        # 3. RVOL 거래량 완화 (15점)
+        rvol = latest['RVOL']
+        if rvol >= 1.2: score += 15
+        
+        # 4. MACD 모멘텀 (20점)
+        if latest['MACD'] > latest['Signal_Line'] or (latest['MACD'] - latest['Signal_Line']) > (prev['MACD'] - prev['Signal_Line']):
+            score += 20
+            
+        # 5. 당일 강세 및 돌파 (15점)
+        if curr_price > prev['High'] and curr_price > latest['Open']: 
+            score += 15
+        
+        # 스코어 범위 클리핑
+        score = int(max(0, min(100, score)))
+        
+        # 동적 목표가 (Target Price) 산출: 스코어에 맞춰 목표 ATR을 1.0~2.0배 곱함
+        atr_val = latest['ATR'] if not pd.isna(latest['ATR']) else (curr_price * 0.05)
+        atr_multiplier = 1.0 + ((score / 100) * 1.0)
+        target_price = curr_price + (atr_val * atr_multiplier)
         
         if fast_mode and score < 55:
             return {'score': score, 'curr_price': curr_price, 'change_pct': change_pct, 'change_val': change_val, 'target_price': target_price, 'ai_comment': "패스 (베이스 모멘텀 점수 55점 미달)"}

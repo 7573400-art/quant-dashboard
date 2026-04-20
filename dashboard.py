@@ -52,8 +52,23 @@ except Exception as e:
     st.stop()
 
 # --- 2. 핵심 분석 함수 ---
+@st.cache_data(ttl=86400) # 하루 한 번 KRX 맵핑 갱신
+def get_krx_mapping():
+    try:
+        import FinanceDataReader as fdr
+        df = fdr.StockListing('KRX')
+        return dict(zip(df['Code'], df['Name']))
+    except:
+        return {}
+
 @st.cache_data(ttl=3600) # 1시간마다 데이터 캐시 갱신
 def get_company_name(ticker):
+    # 한국 증시 종목인 경우 KRX 맵핑에서 이름 확인
+    if str(ticker).isdigit():
+        krx_map = get_krx_mapping()
+        if str(ticker) in krx_map:
+            return krx_map[str(ticker)]
+            
     try:
         search = yf.Search(ticker)
         if search.quotes:
@@ -83,6 +98,25 @@ def get_stock_analysis(ticker):
         df['SMA_200'] = df['Close'].rolling(200).mean()
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         
+        # 추가 추세/모멘텀 지표 계산 (RSI, MACD, ATR)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        high_low = df['High'] - df['Low']
+        high_close = (df['High'] - df['Close'].shift()).abs()
+        low_close = (df['Low'] - df['Close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['ATR'] = true_range.rolling(14).mean()
+        
         latest, prev = df.iloc[-1], df.iloc[-2]
         curr_price = latest['Close']
         
@@ -98,17 +132,35 @@ def get_stock_analysis(ticker):
         change_pct = (change_val / prev_price) * 100
         score = 0
         
-        # 스코어링 (100점 만점)
-        if curr_price > latest['SMA_20']: score += 10
-        if latest['SMA_20'] > latest['SMA_50']: score += 10
-        if latest['SMA_50'] > latest['SMA_200']: score += 20
-        if latest['RVOL'] >= 1.5: score += 30
-        elif latest['RVOL'] >= 1.0: score += 15
-        if curr_price > prev['High']: score += 15
-        if curr_price > latest['Open']: score += 15
+        # 스코어링 최적화 (100점 만점 페널티 시스템 포함)
+        # 1. 이동평균 추세 (30점)
+        if latest['SMA_20'] > latest['SMA_50']: score += 15
+        if latest['SMA_50'] > latest['SMA_200']: score += 15
         
-        # 모멘텀 예측가 공식: 50점 기준 상하 15% 가중치
-        target_price = curr_price * (1 + ((score - 50) / 50) * 0.15)
+        # 2. RSI 모멘텀/과매수 필터 (20점)
+        rsi = latest['RSI']
+        if 40 <= rsi <= 70: score += 20
+        elif rsi > 75: score -= 10 # 과매수 페널티
+        
+        # 3. RVOL 거래량 완화 (15점)
+        rvol = latest['RVOL']
+        if rvol >= 1.2: score += 15
+        
+        # 4. MACD 모멘텀 (20점)
+        if latest['MACD'] > latest['Signal_Line'] or (latest['MACD'] - latest['Signal_Line']) > (prev['MACD'] - prev['Signal_Line']):
+            score += 20
+            
+        # 5. 당일 강세 및 돌파 (15점)
+        if curr_price > prev['High'] and curr_price > latest['Open']: 
+            score += 15
+        
+        # 스코어 범위 클리핑
+        score = max(0, min(100, score))
+        
+        # 동적 목표가 (Target Price) 산출: 스코어에 맞춰 목표 ATR을 1.0~2.0배 곱함
+        atr_val = latest['ATR'] if not pd.isna(latest['ATR']) else (curr_price * 0.05)
+        atr_multiplier = 1.0 + ((score / 100) * 1.0) # 0점일 때 1배, 100점일 때 2배
+        target_price = curr_price + (atr_val * atr_multiplier)
         
         return {
             'name': get_company_name(ticker),
@@ -137,7 +189,12 @@ if st.sidebar.button("리스트에 추가"):
 
 # 종목 삭제
 st.sidebar.subheader("🗑️ 종목 삭제")
-del_t = st.sidebar.selectbox("삭제할 종목 선택", ["선택하세요"] + tickers)
+def format_ticker(t):
+    if t == "선택하세요": return t
+    name = get_company_name(t)
+    return f"{t} ({name})" if name != t else t
+
+del_t = st.sidebar.selectbox("삭제할 종목 선택", ["선택하세요"] + tickers, format_func=format_ticker)
 if st.sidebar.button("선택 종목 삭제") and del_t != "선택하세요":
     cell = sheet_watch.find(del_t)
     sheet_watch.delete_rows(cell.row)
@@ -274,7 +331,11 @@ if news_data:
 st.divider()
 
 if tickers:
-    selected_ticker = st.selectbox("상세 분석 종목 선택", tickers)
+    def format_ticker_main(t):
+        name = get_company_name(t)
+        return f"{t} ({name})" if name != t else t
+        
+    selected_ticker = st.selectbox("상세 분석 종목 선택", tickers, format_func=format_ticker_main)
     
     if selected_ticker:
         data = get_stock_analysis(selected_ticker)
@@ -380,9 +441,24 @@ else:
 # --- 6. 아침 알림 로그 확인 (Log 탭 연동) ---
 st.divider()
 st.subheader("📝 아침 알림 히스토리 (Google Sheets Log)")
-log_data = sheet_log.get_all_records()
+try:
+    log_data = sheet_log.get_all_records(expected_headers=["Date", "Ticker", "Score", "Price", "TargetPrice", "Signal"])
+except:
+    log_data = sheet_log.get_all_records()
+
 if log_data:
     df_log = pd.DataFrame(log_data).tail(15) # 최근 15개 기록만 표시
+    
+    # 열 이름 한글화 처리 (존재할 경우)
+    df_log = df_log.rename(columns={
+        "Date": "시간", "Time": "시간",
+        "Ticker": "종목", 
+        "Score": "알고리즘 점수", 
+        "Price": "현재가", 
+        "TargetPrice": "예측가", "Target": "예측가",
+        "Signal": "상태"
+    })
+    
     st.dataframe(df_log, use_container_width=True)
 else:
-    st.info("아직 누적된 로그 기록이 없습니다.")
+    st.info("아직 누적된 아침 알림 로그 기록이 없습니다. (봇이 알림을 보내면 여기에 추가됩니다)")
