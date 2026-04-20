@@ -52,8 +52,17 @@ except Exception as e:
     st.stop()
 
 # --- 2. 핵심 분석 함수 ---
-@st.cache_data(ttl=86400) # 하루 한 번 KRX 맵핑 갱신
+@st.cache_data(ttl=86400) # 하루 한 번 KRX 맵핑 갱신 (오프라인 캐시 우선 로드)
 def get_krx_mapping():
+    import json
+    import os
+    path = os.path.join(os.path.dirname(__file__), 'krx_mapping.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        pass
+        
     try:
         import FinanceDataReader as fdr
         df = fdr.StockListing('KRX')

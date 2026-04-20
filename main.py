@@ -235,19 +235,16 @@ def send_report(message):
     bot.send_message(message.chat.id, report_msg, parse_mode="Markdown", disable_web_page_preview=True)
 
 krx_map_cache = {}
-last_krx_fetch = 0
 
 def get_krx_mapping():
-    global krx_map_cache, last_krx_fetch
-    import time
-    now_ts = time.time()
-    
-    # 24시간 캐싱 처리
-    if not krx_map_cache or (now_ts - last_krx_fetch > 86400):
+    global krx_map_cache
+    if not krx_map_cache:
+        import json
+        import os
+        path = os.path.join(os.path.dirname(__file__), 'krx_mapping.json')
         try:
-            df = fdr.StockListing('KRX')
-            krx_map_cache = dict(zip(df['Code'], df['Name']))
-            last_krx_fetch = now_ts
+            with open(path, 'r', encoding='utf-8') as f:
+                krx_map_cache = json.load(f)
         except:
             krx_map_cache = {}
             
@@ -504,7 +501,8 @@ def send_all_scores(message):
                 target_fmt = f"${target:.2f}"
             
             # 3. 최종 출력 텍스트 조립
-            report.append(f"{icon} *{t}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt}\n   - 🤖 AI 진단: {data.get('ai_comment','')}")
+            name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t
+            report.append(f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt}\n   - 🤖 AI 진단: {data.get('ai_comment','')}")
     
     bot.send_message(message.chat.id, "\n".join(report), parse_mode="Markdown")
 
@@ -564,7 +562,8 @@ def send_review(message):
             else:
                 eval_str = f"⚠️ 예측 미달/차질 발생 ({diff_pct:.2f}%)"
                 
-            report.append(f"*{t}* (목표가 기준: {old_date})")
+            name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t    
+            report.append(f"*{name_str}* (목표가 기준: {old_date})")
             report.append(f" - 당시 예측가: {old_target_fmt}")
             report.append(f" - 현재 실제가: {curr_fmt}")
             report.append(f" ➜ {eval_str}\n")
@@ -623,7 +622,8 @@ def auto_check_buy_signals():
                     elif chg_pct < 0: chg_str = f"🔻{chg_pct:+.2f}%"
                     else: chg_str = f"➖0.00%"
 
-                    buy_signals.append(f"🚀 *{t}*: 강력 매수 추천 (AI 스코어: {score}점)\n   - 현재: {curr_fmt} ({chg_str})\n   - 🤖 코멘트: {data.get('ai_comment','')}")
+                    name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t
+                    buy_signals.append(f"🚀 *{name_str}*: 강력 매수 추천 (AI 스코어: {score}점)\n   - 현재: {curr_fmt} ({chg_str})\n   - 🤖 코멘트: {data.get('ai_comment','')}")
             
             if buy_signals and CHAT_ID:
                 msg = "🔔 *[1분 실시간 감시] 신규 매수 시그널 포착!*\n\n" + "\n\n".join(buy_signals)
