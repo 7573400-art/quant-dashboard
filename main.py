@@ -331,6 +331,7 @@ def analyze_with_gemini(ticker, technical_score, diff_history, news_summary):
 [출력 형식]
 추론: [당신의 심층적이고 논리적인 판단 과정을 1~2문장으로 서술]
 최종 스코어: [숫자]
+예상도달일: [목표가에 도달하기까지 걸릴 현실적인 예상 기한을 3, 5, 7, 10 중에서 숫자만 하나 골라 출력]
 코멘트: [당신의 추론을 바탕으로 사용자에게 건네는 최종 한 줄 브리핑]"""
 
     try:
@@ -345,16 +346,20 @@ def analyze_with_gemini(ticker, technical_score, diff_history, news_summary):
         if score_match:
             final_score = int(score_match.group(1))
             
-        # 2. 코멘트 안전 파싱 (코멘트: 이후의 모든 문자열을 추출)
+        # 2. 호라이즌 안전 파싱 (예상도달일)
+        horizon_match = re.search(r'예상\s*도달일\s*[:-]?\s*(?:\*\*)?\s*(\d+)', text)
+        horizon = int(horizon_match.group(1)) if horizon_match else 5
+
+        # 3. 코멘트 안전 파싱 (코멘트: 이후의 모든 문자열을 추출)
         comment_match = re.search(r'코멘트\s*[:-]?\s*(.*)', text, flags=re.DOTALL)
         if comment_match:
             comment = comment_match.group(1).strip()
         else:
             comment = text.replace('\n', ' ')
             
-        return final_score, comment
+        return final_score, horizon, comment
     except Exception as e:
-        return technical_score, f"AI 분석 에러: {e}"
+        return technical_score, 5, f"AI 분석 에러: {e}"
 
 def get_stock_info(ticker, log_data=None, fast_mode=False):
     try:
@@ -442,16 +447,16 @@ def get_stock_info(ticker, log_data=None, fast_mode=False):
         target_price = curr_price + (atr_val * atr_multiplier)
         
         if fast_mode and score < 55:
-            return {'score': score, 'curr_price': curr_price, 'change_pct': change_pct, 'change_val': change_val, 'target_price': target_price, 'ai_comment': "패스 (베이스 모멘텀 점수 55점 미달)"}
+            return {'score': score, 'curr_price': curr_price, 'change_pct': change_pct, 'change_val': change_val, 'target_price': target_price, 'ai_comment': "패스 (베이스 모멘텀 점수 55점 미달)", 'horizon': 5}
         
         # AI 복합 스코어링 (뉴스 및 과거 오차 학습 반영)
         name = get_company_name(ticker)
         news_summary = get_recent_news(ticker, name)
         diff_history = get_diff_history(ticker, curr_price, log_data)
         
-        final_score, ai_comment = analyze_with_gemini(ticker, score, diff_history, news_summary)
+        final_score, horizon, ai_comment = analyze_with_gemini(ticker, score, diff_history, news_summary)
         
-        return {'score': final_score, 'curr_price': curr_price, 'change_pct': change_pct, 'change_val': change_val, 'target_price': target_price, 'ai_comment': ai_comment}
+        return {'score': final_score, 'curr_price': curr_price, 'change_pct': change_pct, 'change_val': change_val, 'target_price': target_price, 'ai_comment': ai_comment, 'horizon': horizon}
     except:
         return None
 
@@ -468,7 +473,9 @@ def send_all_scores(message):
         bot.send_message(message.chat.id, f"구글 시트를 읽어오는데 실패했습니다: {e}")
         return
         
-    report = ["📋 *[전 종목 퀀트 스코어 및 예측가]*\n"]
+    report = ["📋 *[전 종목 퀀트 스코어 및 딥러닝 예측가]*\n"]
+    kr_results = []
+    us_results = []
     
     try:
         log_data = sheet_log.get_all_values()
@@ -482,8 +489,8 @@ def send_all_scores(message):
             curr = data['curr_price']
             target = data['target_price'] 
             chg_pct = data['change_pct']
+            horizon = data.get('horizon', 5)
             
-            # 1. 상태 이모지 및 전일비(%) 표시 결정
             if chg_pct > 0: chg_str = f"🔺{chg_pct:+.2f}%"
             elif chg_pct < 0: chg_str = f"🔻{chg_pct:+.2f}%"
             else: chg_str = f"➖0.00%"
@@ -492,17 +499,27 @@ def send_all_scores(message):
             elif score <= 30: icon = "❄️"
             else: icon = "👀"
             
-            # 2. 한/미 화폐 포맷 결정
+            name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t
+            
             if t.isdigit(): 
                 curr_fmt = f"₩{int(curr):,}"
                 target_fmt = f"₩{int(target):,}"
+                item_str = f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt} (예상 기한: {horizon}일)\n   - 🤖 AI 진단: {data.get('ai_comment','')}"
+                kr_results.append(item_str)
             else: 
                 curr_fmt = f"${curr:.2f}"
                 target_fmt = f"${target:.2f}"
-            
-            # 3. 최종 출력 텍스트 조립
-            name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t
-            report.append(f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt}\n   - 🤖 AI 진단: {data.get('ai_comment','')}")
+                item_str = f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt} (예상 기한: {horizon}일)\n   - 🤖 AI 진단: {data.get('ai_comment','')}"
+                us_results.append(item_str)
+                
+    if kr_results:
+        report.append("🇰🇷 *[한국 증시]*")
+        report.extend(kr_results)
+        report.append("")
+        
+    if us_results:
+        report.append("🇺🇸 *[미국 증시]*")
+        report.extend(us_results)
     
     bot.send_message(message.chat.id, "\n".join(report), parse_mode="Markdown")
 
@@ -525,7 +542,14 @@ def send_review(message):
                     target = float(row[4].replace('₩','').replace('$','').replace(',',''))
                 except:
                     continue
-                latest_targets[ticker] = (str(row[0]), target)
+                
+                horizon = 5
+                if len(row) >= 7:
+                    try:
+                        horizon = int(row[6])
+                    except: pass
+                    
+                latest_targets[ticker] = {'date': str(row[0]), 'target': target, 'horizon': horizon}
                 
     try:
         tickers = sheet_watch.col_values(1)[1:]
@@ -533,6 +557,8 @@ def send_review(message):
         return
         
     report = ["📊 *[AI 예측 성과 채점 및 괴리율 리포트]*\n"]
+    kr_results = []
+    us_results = []
     
     for t in tickers:
         data = get_stock_info(t, log_data)
@@ -540,17 +566,31 @@ def send_review(message):
         
         curr = data['curr_price']
         new_target = data['target_price']
+        new_horizon = data.get('horizon', 5)
         
         # 내일의 평가를 위해 오늘 퀀트 결과를 Log에 기록
         report_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
         try:
-            sheet_log.append_row([report_time, t, data['score'], round(curr, 2), round(new_target, 2), "REVIEW"])
+            sheet_log.append_row([report_time, t, data['score'], round(curr, 2), round(new_target, 2), "REVIEW", new_horizon])
         except:
             pass
             
         if t in latest_targets:
-            old_date, old_target = latest_targets[t]
+            info = latest_targets[t]
+            old_date_str = info['date']
+            old_target = info['target']
+            horizon = info['horizon']
             diff_pct = ((curr - old_target) / old_target) * 100
+            
+            # 파이썬 datetime 기능으로 경과일수 파악
+            try:
+                old_dt = pd.to_datetime(old_date_str)
+                passed_days = (datetime.datetime.now() - old_dt).days
+                passed_days = max(1, passed_days)
+            except:
+                passed_days = 1
+                
+            is_expired = passed_days >= horizon
             
             curr_fmt = f"₩{int(curr):,}" if t.isdigit() else f"${curr:.2f}"
             old_target_fmt = f"₩{int(old_target):,}" if t.isdigit() else f"${old_target:.2f}"
@@ -560,15 +600,26 @@ def send_review(message):
             elif diff_pct > -3:
                 eval_str = f"🎯 예측 오차 3% 이내 적중! ({diff_pct:.2f}%)"
             else:
-                eval_str = f"⚠️ 예측 미달/차질 발생 ({diff_pct:.2f}%)"
+                if not is_expired:
+                    eval_str = f"⏳ 도달 진행 중 (목표 기한 {horizon}일 중 {passed_days}일 경과) ({diff_pct:.2f}%)"
+                else:
+                    eval_str = f"⚠️ 기한 초과 및 예측 미달 ({diff_pct:.2f}%)"
                 
             name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t    
-            report.append(f"*{name_str}* (목표가 기준: {old_date})")
-            report.append(f" - 당시 예측가: {old_target_fmt}")
-            report.append(f" - 현재 실제가: {curr_fmt}")
-            report.append(f" ➜ {eval_str}\n")
+            item_str = f"*{name_str}* (목표가 기준: {old_date_str})\n - 당시 예측가: {old_target_fmt}\n - 현재 실제가: {curr_fmt}\n ➜ {eval_str}\n"
+            
+            if t.isdigit(): kr_results.append(item_str)
+            else: us_results.append(item_str)
+            
+    if kr_results:
+        report.append("🇰🇷 *[한국 증시 피드백]*")
+        report.extend(kr_results)
+        
+    if us_results:
+        report.append("🇺🇸 *[미국 증시 피드백]*")
+        report.extend(us_results)
     
-    if len(report) == 1:
+    if (len(kr_results) + len(us_results)) == 0:
         report.append("비교할 어제의 로그 데이터가 없거나 부족합니다.\n방금 평가된 오늘의 가격 명세가 내일의 채점을 위해 Log 탭에 새롭게 저장되었습니다.")
         
     bot.send_message(message.chat.id, "\n".join(report), parse_mode="Markdown")

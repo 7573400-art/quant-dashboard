@@ -423,37 +423,50 @@ st.divider()
 
 # --- 5. 전체 종목 요약 리포트 ---
 st.subheader("📋 관심 종목 상태")
-summary_data = []
+kr_data = []
+us_data = []
+
 for t in tickers:
     res = get_stock_analysis(t)
     if res:
         is_kr = t.isdigit()
-        chg_pct = res['change_pct']
+        curr_fmt = f"₩{int(res['curr_price']):,}" if is_kr else f"${res['curr_price']:.2f}"
+        target_fmt = f"₩{int(res['target_price']):,}" if is_kr else f"${res['target_price']:.2f}"
         
-        # 방향 이모지
-        if chg_pct > 0: chg_icon = "🔴"
-        elif chg_pct < 0: chg_icon = "🔵"
-        else: chg_icon = "⚪"
-        
-        summary_data.append({
-            "종목명": f"{res['name']} ({t})",
-            "현재가": f"₩{int(res['curr_price']):,}" if is_kr else f"${res['curr_price']:.2f}",
-            "전일비": f"{chg_icon} {chg_pct:+.2f}%",
-            "퀀트 점수": f"{res['score']}점",
-            "목표가": f"₩{int(res['target_price']):,}" if is_kr else f"${res['target_price']:.2f}"
-        })
-if summary_data:
-    st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
-else:
-    st.warning("⚠️ 종목 데이터를 불러오지 못했습니다. API 호출 제한(Rate Limit)이 발생했을 수 있습니다. 잠시 후 새로고침해주세요.")
+        row = {
+            "종목코드": t,
+            "종목명": res['name'],
+            "현재가": curr_fmt,
+            "AI 퀀트점수": res['score'],
+            "목표가": target_fmt,
+            "등락(%)": round(res['change_pct'], 2)
+        }
+        if is_kr: kr_data.append(row)
+        else: us_data.append(row)
+
+tab1, tab2 = st.tabs(["🇰🇷 한국 증시", "🇺🇸 미국 증시"])
+
+with tab1:
+    if kr_data:
+        df_kr = pd.DataFrame(kr_data)
+        st.dataframe(df_kr.style.background_gradient(cmap="RdYlGn", subset=["AI 퀀트점수"]), use_container_width=True)
+    else:
+        st.info("한국 증시 관심 종목이 없습니다.")
+
+with tab2:
+    if us_data:
+        df_us = pd.DataFrame(us_data)
+        st.dataframe(df_us.style.background_gradient(cmap="RdYlGn", subset=["AI 퀀트점수"]), use_container_width=True)
+    else:
+        st.info("미국 증시 관심 종목이 없습니다. API 호출 제한(Rate Limit)이 발생했을 수 있습니다. 잠시 후 새로고침해주세요.")
 
 # --- 6. 아침 알림 로그 확인 (Log 탭 연동) ---
 st.divider()
-st.subheader("📝 아침 알림 히스토리 (Google Sheets Log)")
+st.subheader("📝 최근 AI 퀀트 알림 히스토리")
 try:
-    log_data = sheet_log.get_all_records(expected_headers=["Date", "Ticker", "Score", "Price", "TargetPrice", "Signal"])
-except:
     log_data = sheet_log.get_all_records()
+except:
+    log_data = None
 
 if log_data:
     df_log = pd.DataFrame(log_data).tail(15) # 최근 15개 기록만 표시
@@ -465,9 +478,10 @@ if log_data:
         "Score": "알고리즘 점수", 
         "Price": "현재가", 
         "TargetPrice": "예측가", "Target": "예측가",
-        "Signal": "상태"
+        "Signal": "시그널",
+        "TargetDays": "예상기한"
     })
     
-    st.dataframe(df_log, use_container_width=True)
+    st.dataframe(df_log, use_container_width=True, hide_index=True)
 else:
     st.info("아직 누적된 아침 알림 로그 기록이 없습니다. (봇이 알림을 보내면 여기에 추가됩니다)")
