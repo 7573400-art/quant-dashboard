@@ -494,17 +494,20 @@ def send_all_scores(message):
             elif score <= 30: icon = "❄️"
             else: icon = "👀"
             
+            exp_return = ((target - curr) / curr) * 100
+            exp_date = (datetime.datetime.now() + datetime.timedelta(days=horizon)).strftime('%m/%d')
+            
             name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t
             
             if t.isdigit(): 
                 curr_fmt = f"₩{int(curr):,}"
                 target_fmt = f"₩{int(target):,}"
-                item_str = f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt} (예상 기한: {horizon}일)\n   - 🤖 AI 진단: {data.get('ai_comment','')}"
+                item_str = f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt} (예상 수익 {exp_return:+.2f}%, {exp_date} 도달 예상)\n   - 🤖 AI 진단: {data.get('ai_comment','')}"
                 kr_results.append(item_str)
             else: 
                 curr_fmt = f"${curr:.2f}"
                 target_fmt = f"${target:.2f}"
-                item_str = f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt} (예상 기한: {horizon}일)\n   - 🤖 AI 진단: {data.get('ai_comment','')}"
+                item_str = f"{icon} *{name_str}*: {curr_fmt} ({chg_str})\n   - AI 스코어: {score}점 / 목표가: {target_fmt} (예상 수익 {exp_return:+.2f}%, {exp_date} 도달 예상)\n   - 🤖 AI 진단: {data.get('ai_comment','')}"
                 us_results.append(item_str)
                 
     if kr_results:
@@ -667,9 +670,13 @@ def auto_check_buy_signals():
                     if chg_pct > 0: chg_str = f"🔺{chg_pct:+.2f}%"
                     elif chg_pct < 0: chg_str = f"🔻{chg_pct:+.2f}%"
                     else: chg_str = f"➖0.00%"
+                    
+                    horizon = data.get('horizon', 5)
+                    exp_return = ((data['target_price'] - data['curr_price']) / data['curr_price']) * 100
+                    exp_date = (datetime.datetime.now() + datetime.timedelta(days=horizon)).strftime('%m/%d')
 
                     name_str = f"{t} ({get_company_name(t)})" if t.isdigit() else t
-                    buy_signals.append(f"🚀 *{name_str}*: 강력 매수 추천 (AI 스코어: {score}점)\n   - 현재: {curr_fmt} ({chg_str})\n   - 🤖 코멘트: {data.get('ai_comment','')}")
+                    buy_signals.append(f"🚀 *{name_str}*: 강력 매수 추천 (AI 스코어: {score}점)\n   - 현재: {curr_fmt} ({chg_str})\n   - 목표: {target_fmt} (수익 {exp_return:+.2f}%, {exp_date} 도달 예상)\n   - 🤖 코멘트: {data.get('ai_comment','')}")
             
             if buy_signals and CHAT_ID:
                 msg = "🔔 *[1분 실시간 감시] 신규 매수 시그널 포착!*\n\n" + "\n\n".join(buy_signals)

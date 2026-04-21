@@ -388,7 +388,9 @@ if tickers:
             # 카드형 지표
             col1, col2 = st.columns(2)
             col1.metric("📊 AI 퀀트 분석", score_text)
-            col2.metric("🎯 모멘텀 목표가", target_fmt)
+            
+            exp_return = ((data['target_price'] - data['curr_price']) / data['curr_price']) * 100
+            col2.metric("🎯 모멘텀 목표가 (약 5일 내)", target_fmt, f"{exp_return:+.2f}%")
             
             st.markdown("<br>", unsafe_allow_html=True)
             
@@ -428,12 +430,16 @@ for t in tickers:
         curr_fmt = f"₩{int(res['curr_price']):,}" if is_kr else f"${res['curr_price']:.2f}"
         target_fmt = f"₩{int(res['target_price']):,}" if is_kr else f"${res['target_price']:.2f}"
         
+        exp_return = ((res['target_price'] - res['curr_price']) / res['curr_price']) * 100
+        exp_date = (datetime.datetime.now() + datetime.timedelta(days=5)).strftime('%m/%d')
+        target_str = f"{target_fmt} ({exp_return:+.2f}%, {exp_date})"
+        
         row = {
             "종목코드": t,
             "종목명": res['name'],
             "현재가": curr_fmt,
             "AI 퀀트점수": res['score'],
-            "목표가": target_fmt,
+            "목표가": target_str,
             "등락(%)": round(res['change_pct'], 2)
         }
         if is_kr: kr_data.append(row)
