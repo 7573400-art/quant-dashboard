@@ -444,14 +444,14 @@ tab1, tab2 = st.tabs(["🇰🇷 한국 증시", "🇺🇸 미국 증시"])
 with tab1:
     if kr_data:
         df_kr = pd.DataFrame(kr_data)
-        st.dataframe(df_kr.style.background_gradient(cmap="RdYlGn", subset=["AI 퀀트점수"]), use_container_width=True)
+        st.dataframe(df_kr, use_container_width=True, hide_index=True)
     else:
         st.info("한국 증시 관심 종목이 없습니다.")
 
 with tab2:
     if us_data:
         df_us = pd.DataFrame(us_data)
-        st.dataframe(df_us.style.background_gradient(cmap="RdYlGn", subset=["AI 퀀트점수"]), use_container_width=True)
+        st.dataframe(df_us, use_container_width=True, hide_index=True)
     else:
         st.info("미국 증시 관심 종목이 없습니다. API 호출 제한(Rate Limit)이 발생했을 수 있습니다. 잠시 후 새로고침해주세요.")
 
