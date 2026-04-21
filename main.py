@@ -257,12 +257,7 @@ def get_company_name(ticker):
         if str(ticker) in krx_map:
             return krx_map[str(ticker)]
             
-    try:
-        import yfinance as yf
-        search = yf.Search(ticker)
-        if search.quotes:
-            return search.quotes[0].get('longname') or search.quotes[0].get('shortname')
-    except: pass
+    # 미국 주식은 yf.Search나 info가 무한 지연(Hang)을 유발하므로 즉시 티커 리턴 (성능 최우선)
     return ticker
 
 def get_recent_news(ticker, name=""):

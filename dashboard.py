@@ -78,11 +78,6 @@ def get_company_name(ticker):
         if str(ticker) in krx_map:
             return krx_map[str(ticker)]
             
-    try:
-        search = yf.Search(ticker)
-        if search.quotes:
-            return search.quotes[0].get('longname') or search.quotes[0].get('shortname')
-    except: pass
     return ticker
 
 @st.cache_data(ttl=180) # 3분마다 캐시 갱신 (Rate Limit 방지)
