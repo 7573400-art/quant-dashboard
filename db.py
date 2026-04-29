@@ -7,6 +7,35 @@ DB_PATH = 'myquant.db'
 def get_connection():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+def init_db():
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS watchlist (
+                ticker TEXT PRIMARY KEY,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                ticker TEXT,
+                score INTEGER,
+                curr_price REAL,
+                target_price REAL,
+                signal TEXT,
+                horizon INTEGER
+            )
+        ''')
+        conn.commit()
+    finally:
+        conn.close()
+
+# 앱 실행 시 자동 초기화
+init_db()
+
 def get_watchlist():
     conn = get_connection()
     try:
