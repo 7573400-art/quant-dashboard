@@ -11,8 +11,17 @@ def get_fundamental_data(ticker):
     """
     info = {}
     try:
-        # 한국 주식의 경우 .KS, .KQ 접미사 처리 로직 필요 (이전 로직 참고)
-        ticker_obj = yf.Ticker(ticker)
+        # 한국 주식의 경우 .KS, .KQ 접미사 처리 로직 추가
+        search_ticker = ticker
+        if str(ticker).isdigit():
+            # 먼저 .KS로 시도해보고, 데이터가 없으면 .KQ로 변경
+            test_df = yf.download(f"{ticker}.KS", period="1d", progress=False)
+            if not test_df.empty:
+                search_ticker = f"{ticker}.KS"
+            else:
+                search_ticker = f"{ticker}.KQ"
+                
+        ticker_obj = yf.Ticker(search_ticker)
         
         info['ticker'] = ticker
         info['current_price'] = ticker_obj.info.get('currentPrice') or ticker_obj.info.get('regularMarketPrice', 0)
@@ -42,10 +51,18 @@ def get_relative_strength(ticker, market_index='^GSPC', days=90):
     최근 90일간 시장 지수(S&P 500 등) 대비 상대적 수익률(Relative Strength) 산출
     """
     try:
+        search_ticker = ticker
+        if str(ticker).isdigit():
+            test_df = yf.download(f"{ticker}.KS", period="1d", progress=False)
+            if not test_df.empty:
+                search_ticker = f"{ticker}.KS"
+            else:
+                search_ticker = f"{ticker}.KQ"
+
         start_date = (datetime.datetime.now() - datetime.timedelta(days=days+30)).strftime('%Y-%m-%d')
         
         # 종목 데이터
-        stock_df = yf.download(ticker, start=start_date, progress=False)
+        stock_df = yf.download(search_ticker, start=start_date, progress=False)
         if stock_df.empty: return 0
         
         # 지수 데이터
