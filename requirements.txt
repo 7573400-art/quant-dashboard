@@ -4,9 +4,7 @@ yfinance
 pandas
 numpy
 plotly
-gspread
-oauth2client
-google-generativeai
+openai
 requests
 
 python-dotenv
