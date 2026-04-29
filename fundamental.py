@@ -34,6 +34,19 @@ def get_fundamental_data(ticker):
         info['forwardPE'] = ticker_obj.info.get('forwardPE', 0)
         info['priceToBook'] = ticker_obj.info.get('priceToBook', 0)
         
+        # 어닝스 캘린더 (다음 실적발표일)
+        info['earnings_date'] = None
+        info['days_to_earnings'] = None
+        try:
+            cal = ticker_obj.calendar
+            if cal and 'Earnings Date' in cal and len(cal['Earnings Date']) > 0:
+                e_date = cal['Earnings Date'][0]
+                if isinstance(e_date, datetime.date):
+                    info['earnings_date'] = e_date.strftime('%Y-%m-%d')
+                    delta = e_date - datetime.date.today()
+                    info['days_to_earnings'] = delta.days
+        except: pass
+        
         # 괴리율 계산 (현재가 vs 적정가)
         if info['current_price'] > 0 and info['target_mean_price'] > 0:
             diff = info['target_mean_price'] - info['current_price']
@@ -82,9 +95,10 @@ def get_relative_strength(ticker, market_index='^GSPC', days=90):
 
 def fetch_news(query, max_items=5):
     """
-    구글 뉴스 RSS에서 쿼리와 관련된 최신 뉴스를 가져옵니다.
+    구글 뉴스 RSS에서 쿼리와 관련된 최신 뉴스를 가져옵니다. (선행적 기대감 중심)
     """
-    encoded_query = urllib.parse.quote(query)
+    forward_query = f"{query} (예상 OR 전망 OR 목표가 OR 일정 OR 수주 OR 실적발표)"
+    encoded_query = urllib.parse.quote(forward_query)
     url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
     news_list = []
     try:
@@ -98,21 +112,28 @@ def fetch_news(query, max_items=5):
         print(f"Error fetching news for {query}: {e}")
     return news_list
 
-def calculate_market_score(discount_rate, rs_score):
+def calculate_market_score(discount_rate, rs_score, days_to_earnings=None):
     """
-    할인율(50점)과 상대 모멘텀(50점)을 결합하여 100점 만점의 시장/펀더멘털 점수를 산출합니다.
+    할인율(45점)과 상대 모멘텀(45점), 선행적 촉매제(어닝스 임박 보너스 10점)를 결합하여 100점 만점의 시장/펀더멘털 점수를 산출합니다.
     """
     score = 0
     
-    # 1. 가치 밸류에이션 (할인율 50점)
-    if discount_rate >= 20: score += 50
-    elif discount_rate >= 10: score += 30
+    # 1. 가치 밸류에이션 (할인율 45점)
+    if discount_rate >= 20: score += 45
+    elif discount_rate >= 10: score += 25
     elif discount_rate > 0: score += 10
     
-    # 2. 시장 주도력 (상대강도 RS 50점)
-    if rs_score >= 10: score += 50
-    elif rs_score >= 5: score += 30
+    # 2. 시장 주도력 (상대강도 RS 45점)
+    if rs_score >= 10: score += 45
+    elif rs_score >= 5: score += 25
     elif rs_score > 0: score += 10
     elif rs_score < -10: score -= 10 # 심각한 언더퍼폼 감점
     
+    # 3. 선행적 촉매제 보너스 (실적발표 임박 시 최대 10점)
+    if days_to_earnings is not None:
+        if 0 <= days_to_earnings <= 14:
+            score += 10  # 2주 이내 초임박
+        elif 14 < days_to_earnings <= 30:
+            score += 5   # 한 달 이내 임박
+            
     return max(0, min(100, score))

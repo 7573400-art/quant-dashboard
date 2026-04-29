@@ -99,7 +99,8 @@ def get_stock_analysis(ticker):
         # 듀얼 스코어 산출
         chart_score = strategy.calculate_dual_momentum_score(latest)
         rs_score = fundamental.get_relative_strength(ticker)
-        market_score = fundamental.calculate_market_score(discount_rate, rs_score)
+        days_to_earnings = fund_data.get('days_to_earnings')
+        market_score = fundamental.calculate_market_score(discount_rate, rs_score, days_to_earnings=days_to_earnings)
         
         return {
             'name': get_company_name(ticker),
@@ -109,7 +110,8 @@ def get_stock_analysis(ticker):
             'target_price': target_price,
             'discount_rate': discount_rate,
             'chart_score': chart_score,
-            'market_score': market_score
+            'market_score': market_score,
+            'earnings_date': fund_data.get('earnings_date')
         }
     except: return None
 
@@ -331,10 +333,12 @@ if tickers:
             """, unsafe_allow_html=True)
             
             # 카드형 지표
-            col1, col2, col3 = st.columns(3)
+            earnings_str = data.get('earnings_date') or "미정"
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("📈 기술적 차트 점수", chart_text)
-            col2.metric("🏢 가치/펀더멘털 점수", market_text)
-            col3.metric("🎯 적정 주가 (월가 평균)", target_fmt)
+            col2.metric("🏢 가치 및 시장 점수", market_text)
+            col3.metric("🎯 적정 주가", target_fmt)
+            col4.metric("📅 예상 촉매제 (실적일)", earnings_str)
             
             st.markdown("<br>", unsafe_allow_html=True)
             
@@ -394,12 +398,14 @@ for t in tickers:
         target_fmt = f"₩{int(res['target_price']):,}" if is_kr else f"${res['target_price']:.2f}"
         
         target_str = f"{target_fmt} ({res['discount_rate']:+.1f}% 괴리율)"
+        earnings_str = res.get('earnings_date') or "-"
         
         row = {
             "종목코드": t,
             "종목명": res['name'],
             "현재가": curr_fmt,
             "적정가": target_str,
+            "실적발표일": earnings_str,
             "차트 점수": res['chart_score'],
             "시장 점수": res['market_score'],
             "등락(%)": round(res['change_pct'], 2)
