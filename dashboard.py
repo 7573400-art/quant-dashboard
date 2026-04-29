@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 import FinanceDataReader as fdr
 import yfinance as yf
 from urllib.error import URLError
