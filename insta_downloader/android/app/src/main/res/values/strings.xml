@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">인스타저장</string>
+    <string name="subtitle">게시물·릴스 링크를 붙여넣거나, 인스타그램 앱에서 공유 → 인스타저장을 누르세요. 광고 없음.</string>
+    <string name="url_hint">https://www.instagram.com/reel/…</string>
+    <string name="paste">붙여넣기</string>
+    <string name="download">다운로드</string>
+    <string name="cancel">취소</string>
+    <string name="open">열기</string>
+    <string name="share">공유</string>
+    <string name="login">인스타그램 로그인</string>
+    <string name="logout">로그아웃</string>
+    <string name="login_title">인스타그램 로그인</string>
+    <string name="login_done">로그인되었습니다</string>
+    <string name="logout_done">로그아웃되었습니다</string>
+    <string name="update_engine">다운로드 엔진 업데이트</string>
+    <string name="no_link_in_clipboard">클립보드에 인스타그램 링크가 없어요</string>
+
+    <string name="status_preparing">준비 중… (처음 실행은 몇 초 걸려요)</string>
+    <string name="status_downloading">다운로드 중… %1$d%%</string>
+    <string name="status_saved">갤러리에 %1$d개 저장했어요 (Movies/InstaSaver)</string>
+    <string name="status_canceled">취소했어요</string>
+    <string name="status_updating">엔진 업데이트 중…</string>
+    <string name="status_updated">엔진이 최신입니다 (yt-dlp %1$s)</string>
+
+    <string name="err_invalid_link">올바른 인스타그램 링크가 아니에요</string>
+    <string name="err_login_required">인스타그램이 로그인을 요구해요. 오른쪽 위 메뉴 → 인스타그램 로그인 후 다시 시도하세요.</string>
+    <string name="err_login_expired">로그인이 만료됐거나 볼 수 없는 게시물이에요. 다시 로그인해 보세요.</string>
+    <string name="err_no_video">이 게시물에는 동영상이 없어요.</string>
+    <string name="err_network">인터넷 연결을 확인해 주세요.</string>
+    <string name="err_generic">동영상을 가져오지 못했어요. 메뉴 → 다운로드 엔진 업데이트 후 다시 시도해 보세요.</string>
+    <string name="err_update">업데이트에 실패했어요. 인터넷 연결을 확인해 주세요.</string>
+</resources>
