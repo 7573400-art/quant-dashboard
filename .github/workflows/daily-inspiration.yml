@@ -1,0 +1,67 @@
+name: Daily Inspiration (Instagram)
+
+on:
+  schedule:
+    # 매일 06:47 KST (= 21:47 UTC 전날)
+    - cron: "47 21 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "업로드 없이 이미지만 생성"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-inspiration
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daily_inspiration
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: daily_inspiration/requirements.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: daily_inspiration/fonts
+          key: daily-inspiration-fonts-v1
+
+      - run: pip install -r requirements.txt
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Generate & post
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          INSTAGRAM_GRAPH_HOST: ${{ vars.INSTAGRAM_GRAPH_HOST || 'graph.facebook.com' }}
+          IMAGE_HOST: ${{ vars.IMAGE_HOST || 'imgbb' }}
+          IMGBB_API_KEY: ${{ secrets.IMGBB_API_KEY }}
+        run: python run.py ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Upload image (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-inspiration-${{ github.run_id }}
+          path: daily_inspiration/output/
+
+      - name: Save history
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git add history.json
+          git diff --cached --quiet || git commit -m "daily-inspiration: update history"
+          git push
