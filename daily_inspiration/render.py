@@ -1,9 +1,13 @@
 """
 책을 직접 촬영한 것처럼 보이는 이미지를 생성합니다.
 
-1. 종이 질감 위에 본문을 조판합니다 (양쪽 정렬, 러닝헤드, 쪽번호, 형광펜 밑줄).
-2. 책 가운데 접히는 부분(제본선)의 그림자와 종이의 휘어짐을 적용합니다.
-3. 나무 책상 위에 비스듬히 놓고, 조명·비네팅·초점 흐림·노이즈를 더해 사진처럼 만듭니다.
+2D 필터를 덧씌우는 대신, 작은 3D 장면을 만들어 '촬영'합니다.
+
+1. 조판: 종이 질감 위에 본문을 양쪽 정렬로 찍고 러닝헤드·쪽번호·형광펜·뒷면 비침을 넣습니다.
+2. 장면: 펼친 책(제본선에서 휘어 올라가는 페이지, 페이지 단면, 표지)을 책상 위에 놓습니다.
+3. 촬영: 스마트폰 카메라 위치에서 픽셀마다 광선을 쏘아(ray marching) 책·책상과 만나는 점을 찾고,
+   표면 기울기에 따른 조명, 책의 그림자, 거리에 따른 초점 흐림을 계산합니다.
+4. 폰카 후처리: 화이트밸런스, 톤커브, 렌즈 비네팅·색수차, 센서 노이즈, 샤프닝, JPEG 압축.
 """
 import hashlib
 import math
@@ -12,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import requests
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 BASE_DIR = Path(__file__).resolve().parent
 FONT_DIR = BASE_DIR / "fonts"
@@ -24,11 +28,13 @@ FONT_URLS = {
 }
 
 OUT_W, OUT_H = 1080, 1350          # 인스타그램 세로 피드 (4:5)
-PAGE_W, PAGE_H = 1500, 2100        # 조판용 페이지 해상도
+SS = 1.5                           # 슈퍼샘플링 배율 (렌더 후 축소)
+PAGE_W, PAGE_H = 1500, 2100        # 조판용 페이지 해상도 (3D 장면의 길이 단위이기도 함: 1 = 약 0.09mm)
 MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 190, 260, 240
 
-PAPER_TONES = [(244, 238, 224), (241, 233, 215), (246, 242, 233), (238, 229, 210)]
-MARKER_COLORS = [(255, 226, 92), (255, 214, 120), (180, 230, 140), (255, 190, 200)]
+PAPER_TONES = [(244, 238, 224), (240, 233, 216), (246, 243, 235), (236, 228, 210)]
+MARKER_COLORS = [(255, 226, 92), (255, 214, 120), (186, 232, 140), (255, 192, 203)]
+COVER_COLORS = [(38, 52, 74), (120, 40, 36), (226, 220, 205), (58, 74, 56), (30, 30, 32), (196, 160, 110)]
 
 
 def ensure_fonts():
@@ -44,6 +50,12 @@ def ensure_fonts():
 
 def _font(name, size):
     return ImageFont.truetype(str(FONT_DIR / name), size)
+
+
+def _smooth_noise(h, w, cells, rng):
+    """0~1 범위의 부드러운 저주파 노이즈."""
+    small = Image.fromarray((rng.random((max(cells[0], 2), max(cells[1], 2))) * 255).astype(np.uint8))
+    return np.asarray(small.resize((w, h), Image.BICUBIC), dtype=np.float32) / 255
 
 
 # ---------------------------------------------------------------------------
@@ -111,57 +123,47 @@ def _find_highlight_ranges(paragraphs, highlight):
 
 def _paper_texture(w, h, tone, rng):
     base = np.ones((h, w, 3), dtype=np.float32) * np.array(tone, dtype=np.float32)
-    # 종이 섬유: 미세 노이즈 + 저주파 얼룩
-    fine = rng.normal(0, 4.0, (h, w)).astype(np.float32)
-    blotch = Image.fromarray((rng.random((h // 40, w // 40)) * 255).astype(np.uint8))
-    blotch = blotch.resize((w, h), Image.BICUBIC).filter(ImageFilter.GaussianBlur(30))
-    blotch = (np.asarray(blotch, dtype=np.float32) - 128) / 128 * 5
-    fiber = Image.fromarray((rng.random((h, w // 6)) * 255).astype(np.uint8)).resize((w, h), Image.BILINEAR)
-    fiber = (np.asarray(fiber, dtype=np.float32) - 128) / 128 * 2.5
-    noise = (fine + blotch + fiber)[..., None]
-    return np.clip(base + noise, 0, 255).astype(np.uint8)
+    fine = rng.normal(0, 2.2, (h, w)).astype(np.float32)
+    blotch = (_smooth_noise(h, w, (h // 90, w // 90), rng) - 0.5) * 7
+    fiber = (_smooth_noise(h, w, (h, w // 7), rng) - 0.5) * 3
+    return np.clip(base + (fine + blotch + fiber)[..., None], 0, 255)
 
 
-def render_page(passage, rng):
-    """평평한 책 한 페이지(오른쪽 페이지)를 그립니다."""
-    tone = PAPER_TONES[rng.integers(len(PAPER_TONES))]
-    page = Image.fromarray(_paper_texture(PAGE_W, PAGE_H, tone, rng))
-    draw = ImageDraw.Draw(page)
-
+def _typeset(passage, rng, page_no, filler_mode=False):
+    """페이지의 잉크 마스크(L)와 형광펜 마스크(L)를 만듭니다."""
+    ink = Image.new("L", (PAGE_W, PAGE_H), 0)
+    draw = ImageDraw.Draw(ink)
     body_font = _font("NanumMyeongjo-Regular.ttf", 50)
     head_font = _font("NanumMyeongjo-Regular.ttf", 30)
-    ink = (38, 34, 30)
-    sub_ink = (110, 102, 92)
 
-    # 러닝헤드 / 쪽번호
     head = passage["book"] + (f"  ·  {passage['chapter']}" if passage.get("chapter") else "")
+    if filler_mode:
+        head = passage.get("author", head)
     hw = draw.textlength(head, font=head_font)
-    draw.text(((PAGE_W - hw) / 2, 150), head, font=head_font, fill=sub_ink)
-    page_no = str(int(rng.integers(17, 289)))
-    pw = draw.textlength(page_no, font=head_font)
-    draw.text(((PAGE_W - pw) / 2, PAGE_H - 150), page_no, font=head_font, fill=sub_ink)
+    draw.text(((PAGE_W - hw) / 2, 150), head, font=head_font, fill=150)
+    pw = draw.textlength(str(page_no), font=head_font)
+    draw.text(((PAGE_W - pw) / 2, PAGE_H - 150), str(page_no), font=head_font, fill=150)
 
     paragraphs = [p.strip() for p in passage["text"].split("\n") if p.strip()]
-    hl_ranges = _find_highlight_ranges(paragraphs, passage.get("highlight", ""))
+    hl_ranges = [] if filler_mode else _find_highlight_ranges(paragraphs, passage.get("highlight", ""))
     text_w = PAGE_W - MARGIN_X * 2
     line_h = int(body_font.size * 1.85)
     indent = body_font.getlength("가")
 
     laid = [(_wrap_paragraph(p, body_font, text_w, indent), pi) for pi, p in enumerate(paragraphs)]
-    total_lines = sum(len(l) for l, _ in laid)
-    block_h = total_lines * line_h + (len(laid) - 1) * line_h * 0.35
-    avail_h = PAGE_H - MARGIN_TOP - MARGIN_BOTTOM
-    # 본문을 페이지 위쪽~가운데 사이에 둡니다 (책 페이지처럼 보이도록 약간 위로)
-    y = MARGIN_TOP + max(0, (avail_h - block_h) * 0.38)
+    if filler_mode:
+        y = MARGIN_TOP
+    else:
+        total_lines = sum(len(l) for l, _ in laid)
+        block_h = total_lines * line_h + (len(laid) - 1) * line_h * 0.35
+        avail_h = PAGE_H - MARGIN_TOP - MARGIN_BOTTOM
+        y = MARGIN_TOP + max(0, (avail_h - block_h) * 0.38)
 
-    marker = MARKER_COLORS[rng.integers(len(MARKER_COLORS))]
-    hl_layer = Image.new("L", page.size, 0)
-    hl_draw = ImageDraw.Draw(hl_layer)
-    word_boxes = []
-
+    boxes = []
     for lines, pi in laid:
-        para = paragraphs[pi]
         for words, is_last, line_indent in lines:
+            if y > PAGE_H - MARGIN_BOTTOM - line_h:
+                break
             widths = [body_font.getlength(w) for w, _ in words]
             gaps = len(words) - 1
             base_space = body_font.getlength(" ")
@@ -179,232 +181,401 @@ def render_page(passage, rng):
             for (word, start), ww in zip(words, widths):
                 for ci, ch in enumerate(word):
                     cw = body_font.getlength(ch)
-                    draw.text((x, y), ch, font=body_font, fill=ink)
-                    in_hl = any(hpi == pi and hs <= start + ci < he for hpi, hs, he in hl_ranges)
-                    if in_hl:
-                        word_boxes.append((x, x + cw, y))
+                    # 인쇄 농도가 글자마다 미세하게 다름
+                    draw.text((x, y), ch, font=body_font, fill=int(rng.uniform(222, 255)))
+                    if any(hpi == pi and hs <= start + ci < he for hpi, hs, he in hl_ranges):
+                        boxes.append((x, x + cw, y))
                     x += cw + tracking
                 x += space - tracking
             y += line_h
         y += line_h * 0.35
 
     # 형광펜: 같은 줄의 박스를 이어 붙이고 손으로 그은 듯 흔들리게
+    hl = Image.new("L", (PAGE_W, PAGE_H), 0)
+    hl_draw = ImageDraw.Draw(hl)
     by_line = {}
-    for x0, x1, ly in word_boxes:
+    for x0, x1, ly in boxes:
         by_line.setdefault(ly, []).append((x0, x1))
     for ly, spans in by_line.items():
         x0 = min(s for s, _ in spans) - rng.uniform(4, 14)
         x1 = max(e for _, e in spans) + rng.uniform(4, 14)
-        top = ly + body_font.size * 0.12 + rng.uniform(-4, 4)
-        bot = ly + body_font.size * 1.18 + rng.uniform(-4, 4)
+        top = ly + body_font.size * 0.14 + rng.uniform(-4, 4)
+        bot = ly + body_font.size * 1.16 + rng.uniform(-4, 4)
         tilt = rng.uniform(-5, 5)
-        hl_draw.polygon([(x0, top), (x1, top + tilt), (x1 + 3, bot + tilt), (x0 - 2, bot)], fill=150)
-    if word_boxes:
-        hl_layer = hl_layer.filter(ImageFilter.GaussianBlur(2.2))
-        streak = Image.fromarray((rng.random((PAGE_H, PAGE_W // 8)) * 70 + 185).astype(np.uint8))
-        streak = streak.resize(page.size, Image.BILINEAR)
-        hl_layer = ImageChops.multiply(hl_layer, streak)
-        color = Image.new("RGB", page.size, marker)
-        # 형광펜은 곱하기(multiply) 합성 → 아래 글자가 비쳐 보임
-        marked = ImageChops.multiply(page, color)
-        page = Image.composite(marked, page, hl_layer)
+        hl_draw.polygon([(x0, top), (x1, top + tilt), (x1 + 3, bot + tilt), (x0 - 2, bot)], fill=255)
+    if boxes:
+        hl = hl.filter(ImageFilter.GaussianBlur(2.0))
+        streak = _smooth_noise(PAGE_H, PAGE_W, (PAGE_H // 3, PAGE_W // 10), rng) * 0.35 + 0.6
+        hl = Image.fromarray((np.asarray(hl, dtype=np.float32) * streak).astype(np.uint8))
 
-    # 잉크가 종이에 살짝 번진 느낌
-    return page.filter(ImageFilter.GaussianBlur(0.6))
+    ink = ink.filter(ImageFilter.GaussianBlur(0.7))     # 잉크 번짐
+    return ink, hl
 
 
-# ---------------------------------------------------------------------------
-# 2. 펼친 책 (왼쪽 페이지 일부 + 제본선 + 휘어짐)
-# ---------------------------------------------------------------------------
-def _remap(img_arr, map_x, map_y):
-    """numpy만으로 구현한 bilinear remap (영역 밖은 투명)."""
-    h, w = img_arr.shape[:2]
-    x0 = np.floor(map_x).astype(np.int32)
-    y0 = np.floor(map_y).astype(np.int32)
-    fx, fy = (map_x - x0)[..., None], (map_y - y0)[..., None]
-    valid = (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
-    x0c, y0c = np.clip(x0, 0, w - 2), np.clip(y0, 0, h - 2)
-    a = img_arr[y0c, x0c].astype(np.float32)
-    b = img_arr[y0c, x0c + 1].astype(np.float32)
-    c = img_arr[y0c + 1, x0c].astype(np.float32)
-    d = img_arr[y0c + 1, x0c + 1].astype(np.float32)
-    out = a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy
-    out[~valid] = 0
-    return out.astype(np.uint8)
+def render_page(passage, rng, tone, page_no, back_ink=None, filler_mode=False):
+    """평평한 페이지 텍스처(float32 RGB)와 그 페이지의 잉크 마스크를 반환합니다."""
+    paper = _paper_texture(PAGE_W, PAGE_H, tone, rng)
+    ink, hl = _typeset(passage, rng, page_no, filler_mode)
 
+    # 뒷면 글씨가 살짝 비침 (좌우 반전)
+    if back_ink is not None:
+        show = np.asarray(back_ink.transpose(Image.FLIP_LEFT_RIGHT), dtype=np.float32) / 255
+        paper *= (1 - 0.055 * show)[..., None]
 
-def build_open_book(page, rng, filler):
-    """오른쪽 페이지 + 잘린 왼쪽 페이지로 펼친 책을 만들고 종이를 휘게 합니다."""
-    left_w = int(PAGE_W * 0.22)
-    W, H = left_w + PAGE_W, PAGE_H
-    spread = Image.new("RGB", (W, H))
-    left = Image.fromarray(_paper_texture(left_w, H, PAPER_TONES[0], rng))
-    # 왼쪽 페이지에는 희미한 글줄 흔적만 (초점 밖)
-    ld = ImageDraw.Draw(left)
-    font = _font("NanumMyeongjo-Regular.ttf", 50)
-    filler = filler.replace("\n", " ") + " "
-    yy = MARGIN_TOP + 40
-    while yy < H - MARGIN_BOTTOM:
-        offset = rng.integers(0, len(filler))
-        ld.text((-int(rng.integers(40, 300)), yy), (filler * 3)[offset: offset + 40], font=font, fill=(60, 55, 50))
-        yy += int(font.size * 1.85)
-    left = left.filter(ImageFilter.GaussianBlur(3))
-    spread.paste(left, (0, 0))
-    spread.paste(page, (left_w, 0))
+    # 형광펜은 곱하기 합성 → 아래 글자가 비쳐 보임
+    if hl.getbbox():
+        marker = MARKER_COLORS[rng.integers(len(MARKER_COLORS))]
+        a = (np.asarray(hl, dtype=np.float32) / 255)[..., None] * 0.62
+        paper = paper * (1 - a) + paper * (np.array(marker) / 255) * a
 
-    arr = np.asarray(spread).astype(np.float32)
-    gutter = left_w
-    xs = np.arange(W, dtype=np.float32)
-
-    # 제본선 근처 그림자 (양쪽으로 어두워짐)
-    dist = np.abs(xs - gutter)
-    shade = 1 - 0.55 * np.exp(-dist / 55) - 0.18 * np.exp(-dist / 260)
-    # 바깥쪽 가장자리로 갈수록 살짝 밝게/어둡게
-    shade *= 1 - 0.06 * (xs / W)
-    arr *= shade[None, :, None]
-    arr = np.clip(arr, 0, 255).astype(np.uint8)
-
-    # 종이 휘어짐: 제본선 쪽이 아래로 말려 들어가고, 페이지 위·아래는 반대로 휨
-    yy_, xx_ = np.mgrid[0:H, 0:W].astype(np.float32)
-    rel = (xx_ - gutter) / (W - gutter)                  # 오른쪽 페이지: 0(제본선) → 1(바깥)
-    curl = np.where(rel >= 0, np.exp(-rel * 4.0), np.exp(rel * 9.0))
-    vy = (yy_ - H / 2) / (H / 2)                          # -1(위) → 1(아래)
-    amp = rng.uniform(26, 42)
-    map_y = yy_ - amp * curl * vy * 1.0 - 10 * np.sin(np.clip(rel, 0, 1) * math.pi) * vy
-    # 가운데로 갈수록 가로로 압축(종이가 기울어져 보이는 효과)
-    map_x = xx_ + 18 * curl * np.sign(xx_ - gutter)
-    warped = _remap(arr, map_x, map_y)
-
-    alpha = np.full((H, W), 255, dtype=np.uint8)
-    alpha = _remap(alpha[..., None], map_x, map_y)[..., 0]
-    img = Image.fromarray(warped).convert("RGBA")
-    img.putalpha(Image.fromarray(alpha))
-    return img, gutter
+    ink_tone = np.array([34, 31, 30], dtype=np.float32)
+    grain = _smooth_noise(PAGE_H, PAGE_W, (PAGE_H // 3, PAGE_W // 3), rng) * 0.2 + 0.8
+    a = (np.asarray(ink, dtype=np.float32) / 255 * grain)[..., None]
+    page = paper * (1 - a) + ink_tone * a
+    return np.clip(page, 0, 255).astype(np.float32), ink
 
 
 # ---------------------------------------------------------------------------
-# 3. 촬영 효과
+# 2. 3D 장면: 펼친 책 + 책상
 # ---------------------------------------------------------------------------
-def _wood_background(w, h, rng):
-    base = np.array(
-        [(122, 86, 58), (96, 68, 46), (150, 118, 88), (70, 52, 40)][rng.integers(4)],
-        dtype=np.float32,
-    )
-    y, x = np.mgrid[0:h, 0:w].astype(np.float32)
-    phase = rng.uniform(0, 100)
-    lowfreq = Image.fromarray((rng.random((h // 60 + 2, 6)) * 255).astype(np.uint8)).resize((w, h), Image.BICUBIC)
-    warp = (np.asarray(lowfreq, dtype=np.float32) / 255) * 40
-    grain = np.sin((x * 0.06 + warp + phase) * 1.7) * 0.5 + np.sin((x * 0.013 + warp * 0.3) * 3.1) * 0.5
-    fine = rng.normal(0, 1, (h, w)).astype(np.float32)
-    fine = np.asarray(Image.fromarray(((fine + 3) * 40).clip(0, 255).astype(np.uint8)).resize((w, h)).filter(ImageFilter.GaussianBlur(1)), dtype=np.float32) / 40 - 3
-    lum = 1 + 0.12 * grain + 0.03 * fine
-    arr = base[None, None, :] * lum[..., None]
-    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+def _sample(tex, u, v):
+    """텍스처 bilinear 샘플링 (u=가로, v=세로 픽셀 좌표, 범위 밖은 가장자리 값)."""
+    h, w = tex.shape[:2]
+    u = np.clip(u, 0, w - 1.001)
+    v = np.clip(v, 0, h - 1.001)
+    x0, y0 = u.astype(np.int32), v.astype(np.int32)
+    fx, fy = (u - x0)[..., None], (v - y0)[..., None]
+    a, b = tex[y0, x0], tex[y0, x0 + 1]
+    c, d = tex[y0 + 1, x0], tex[y0 + 1, x0 + 1]
+    return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy
 
 
-def _perspective_coeffs(src, dst):
-    """dst 좌표 → src 좌표로 가는 PIL PERSPECTIVE 계수."""
-    matrix = []
-    for (xs, ys), (xd, yd) in zip(src, dst):
-        matrix.append([xd, yd, 1, 0, 0, 0, -xs * xd, -xs * yd])
-        matrix.append([0, 0, 0, xd, yd, 1, -ys * xd, -ys * yd])
-    A = np.array(matrix, dtype=np.float64)
-    B = np.array(src, dtype=np.float64).reshape(8)
-    return np.linalg.solve(A, B).tolist()
+class Book:
+    """책상(z=0) 위에 놓인 펼친 책. x=0이 제본선, y는 위(0)→아래(PAGE_H), z는 높이."""
+
+    def __init__(self, rng):
+        self.cover_t = rng.uniform(6, 14)              # 표지 두께
+        self.cover_m = rng.uniform(14, 26)             # 표지가 종이보다 튀어나온 여백
+        self.stack = rng.uniform(110, 230)             # 한쪽 페이지 묶음 높이
+        self.k = rng.uniform(170, 280)                 # 제본선 곡률 폭
+        self.dip = rng.uniform(0.72, 0.85)             # 제본선에서 얼마나 깊이 내려가는지
+        self.droop = rng.uniform(15, 40)               # 바깥 가장자리 처짐
+        # 페이지의 가로 실제 길이(호의 길이)가 PAGE_W가 되도록 바깥 끝 X를 찾음
+        xs = np.linspace(0, PAGE_W * 1.05, 6000)
+        self._xs = xs
+        X = PAGE_W
+        for _ in range(4):
+            dz = np.gradient(self._raw(xs, X), xs)
+            arc = np.concatenate([[0], np.cumsum(np.sqrt(1 + dz[1:] ** 2) * np.diff(xs))])
+            X = float(np.interp(PAGE_W, arc, xs))
+        self.X = X
+        self._arc = arc
+        self.top = self.cover_t + self.stack + 5
+
+    def _raw(self, ax, X):
+        t = np.clip(ax / X, 0, 1)
+        return self.cover_t + self.stack * (1 - self.dip * np.exp(-ax / self.k)) - self.droop * t ** 6
+
+    def height(self, x):
+        return self._raw(np.abs(x), self.X)
+
+    def slope(self, x):
+        ax = np.abs(x)
+        t = np.clip(ax / self.X, 0, 1)
+        d = self.stack * self.dip / self.k * np.exp(-ax / self.k) - 6 * self.droop * t ** 5 / self.X
+        return d * np.sign(x)
+
+    def arclen(self, x):
+        return np.interp(np.abs(x), self._xs, self._arc)
+
+    def solid(self, x, y, z):
+        """점이 책(페이지 묶음 또는 표지) 안에 있는지."""
+        in_pages = (np.abs(x) <= self.X) & (y >= 0) & (y <= PAGE_H) & (z <= self.height(x)) & (z >= 0)
+        m = self.cover_m
+        in_cover = (np.abs(x) <= self.X + m) & (y >= -m) & (y <= PAGE_H + m) & (z <= self.cover_t) & (z >= 0)
+        return in_pages | in_cover
 
 
-def photograph(book, gutter, rng):
-    """펼친 책을 책상 위에 놓고 사진을 찍은 것처럼 만듭니다."""
-    scale = 3  # 원근 변환은 큰 캔버스에서 한 뒤 축소 (안티앨리어싱)
-    CW, CH = OUT_W * scale // 2, OUT_H * scale // 2
-    canvas = _wood_background(CW, CH, rng).convert("RGBA")
+def _wood_or_fabric(u, v, rng):
+    """책상 표면 색 (u, v: 책상 좌표). 초점 밖이라 저주파 위주로 충분합니다."""
+    kind = rng.integers(3)
+    if kind == 0:   # 밝은 원목
+        base = np.array([176, 136, 98]) * rng.uniform(0.7, 1.1)
+        ring = np.sin((u * 0.004 + np.sin(v * 0.0007 + rng.uniform(0, 6)) * 2.2) * 6.0)
+        streak = np.sin(u * 0.03 + np.sin(v * 0.002) * 3)
+        lum = 1 + 0.07 * ring + 0.03 * streak
+    elif kind == 1:  # 리넨 / 침구
+        base = np.array([222, 216, 204]) * rng.uniform(0.85, 1.02)
+        # 천의 주름: 방향이 다른 몇 개의 큰 물결을 겹침
+        ph = rng.uniform(0, 6, 3)
+        folds = (np.sin(u * 0.0021 + v * 0.0009 + ph[0]) * np.sin(v * 0.0013 - u * 0.0004 + ph[1])
+                 + 0.6 * np.sin(u * 0.0047 - v * 0.0031 + ph[2]))
+        lum = 1 + 0.02 * np.sin(u * 0.9) * np.sin(v * 0.9) + 0.09 * folds
+    else:            # 짙은 원목
+        base = np.array([92, 62, 42]) * rng.uniform(0.8, 1.2)
+        ring = np.sin((u * 0.003 + np.sin(v * 0.0005 + rng.uniform(0, 6)) * 1.6) * 7.0)
+        lum = 1 + 0.10 * ring + 0.03 * np.sin(u * 0.05)
+    return base[None, :] * lum[..., None]
 
-    bw, bh = book.size
-    # 프레임 안에 오른쪽 페이지가 대부분 들어오도록 배치
-    target_h = CH * rng.uniform(1.0, 1.08)
-    s = target_h / bh
-    book_s = book.resize((int(bw * s), int(bh * s)), Image.LANCZOS)
-    bw, bh = book_s.size
-    gx = gutter * s
 
-    # 원근: 위쪽이 조금 좁아지게 (카메라가 아래쪽에서 비스듬히 내려다봄)
-    k = rng.uniform(0.03, 0.06)
-    skew = rng.uniform(-0.02, 0.02)
-    src = [(0, 0), (bw, 0), (bw, bh), (0, bh)]
-    dst = [
-        (bw * (k + skew), bh * 0.01),
-        (bw * (1 - k + skew), 0),
-        (bw * (1 + 0.01), bh),
-        (-bw * 0.01, bh * 0.99),
-    ]
-    coeffs = _perspective_coeffs(src, dst)
-    book_p = book_s.transform((bw, bh), Image.PERSPECTIVE, coeffs, Image.BICUBIC)
-    angle = rng.uniform(-3.0, 3.0)
-    book_p = book_p.rotate(angle, resample=Image.BICUBIC, expand=True)
+# ---------------------------------------------------------------------------
+# 3. 촬영
+# ---------------------------------------------------------------------------
+def _camera_rays(rng, book, W, H):
+    """스마트폰 카메라 위치와 픽셀별 광선 방향."""
+    # 오른쪽 페이지 본문 근처를 겨냥, 폰을 살짝 기울여 아래쪽에서 비스듬히 내려다봄
+    target = np.array([book.X * rng.uniform(0.47, 0.55), PAGE_H * rng.uniform(0.47, 0.53), book.top])
+    tilt = math.radians(rng.uniform(10, 22))           # 수직에서 기운 각도
+    yaw = math.radians(rng.uniform(-10, 10))
+    fov_v = math.radians(62)                           # 폰 메인 카메라 세로 화각 근사
+    dist = PAGE_H * rng.uniform(0.98, 1.06) / (2 * math.tan(fov_v / 2))
+    back = np.array([math.sin(yaw) * math.sin(tilt), math.cos(yaw) * math.sin(tilt), math.cos(tilt)])
+    cam = target + back * dist
 
-    # 위치: 제본선이 왼쪽 가장자리 근처에 오도록
-    ox = int(-gx + CW * rng.uniform(0.03, 0.09))
-    oy = int((CH - book_p.size[1]) / 2 + rng.uniform(-20, 20))
+    fwd = (target - cam) / np.linalg.norm(target - cam)
+    up_hint = np.array([0.0, -1.0, 0.0])               # 화면 위쪽 = 페이지 위쪽
+    right = np.cross(up_hint, fwd); right /= np.linalg.norm(right)
+    up = np.cross(fwd, right)
+    roll = math.radians(rng.uniform(-2.5, 2.5))
+    right, up = right * math.cos(roll) + up * math.sin(roll), up * math.cos(roll) - right * math.sin(roll)
 
-    # 그림자
-    shadow_alpha = book_p.split()[3].point(lambda a: int(a * 0.65))
-    shadow = Image.new("RGBA", book_p.size, (15, 10, 5, 0))
-    shadow.putalpha(shadow_alpha)
-    shadow = shadow.filter(ImageFilter.GaussianBlur(28))
-    canvas.alpha_composite(shadow, (ox + 22, oy + 30))
-    # 책 두께(페이지 단면) — 아래·오른쪽에 얇은 층
-    edge = Image.new("RGBA", book_p.size, (214, 204, 186, 0))
-    edge.putalpha(book_p.split()[3])
-    for i in range(6, 0, -1):
-        canvas.alpha_composite(edge, (ox + i * 2, oy + i * 3))
-    canvas.alpha_composite(book_p, (ox, oy))
+    th = math.tan(fov_v / 2)
+    tw = th * W / H
+    py, px = np.mgrid[0:H, 0:W].astype(np.float32)
+    sx = ((px + 0.5) / W * 2 - 1) * tw
+    sy = (1 - (py + 0.5) / H * 2) * th
+    d = fwd[None, None, :] + sx[..., None] * right + sy[..., None] * up
+    d /= np.linalg.norm(d, axis=-1, keepdims=True)
+    return cam, d.astype(np.float32), dist
 
-    img = canvas.convert("RGB").resize((OUT_W, OUT_H), Image.LANCZOS)
-    arr = np.asarray(img).astype(np.float32)
 
-    h, w = arr.shape[:2]
-    y, x = np.mgrid[0:h, 0:w].astype(np.float32)
-    # 창가에서 들어오는 빛: 한쪽 위에서 밝고 반대편 아래가 어두움
-    lx, ly = rng.uniform(0.6, 1.1) * w, rng.uniform(-0.2, 0.2) * h
-    d = np.sqrt((x - lx) ** 2 + (y - ly) ** 2) / math.hypot(w, h)
-    light = 1.10 - 0.38 * d
-    # 비네팅
-    vx, vy = (x - w / 2) / (w / 2), (y - h / 2) / (h / 2)
-    vignette = 1 - 0.22 * (vx ** 2 + vy ** 2) ** 1.2
-    arr *= (light * vignette)[..., None]
-    # 따뜻한 색온도 + 약간 바랜 톤
-    warm = np.array([1.04, 1.0, 0.92], dtype=np.float32)
-    arr = arr * warm + 6
-    arr = np.clip(arr, 0, 255)
+def _march(book, cam, d):
+    """광선이 책과 처음 만나는 지점의 t (없으면 책상 z=0)."""
+    dz = d[..., 2]
+    t_top = (book.top - cam[2]) / dz
+    t_floor = (0 - cam[2]) / dz
+    steps = 48
+    hit = np.zeros(dz.shape, bool)
+    lo = t_top.copy()
+    hi = t_floor.copy()
+    prev = t_top
+    for i in range(1, steps + 1):
+        t = t_top + (t_floor - t_top) * (i / steps)
+        p = cam + d * t[..., None]
+        inside = book.solid(p[..., 0], p[..., 1], p[..., 2]) & ~hit
+        lo = np.where(inside, prev, lo)
+        hi = np.where(inside, t, hi)
+        hit |= inside
+        prev = t
+    for _ in range(14):
+        mid = (lo + hi) / 2
+        p = cam + d * mid[..., None]
+        inside = book.solid(p[..., 0], p[..., 1], p[..., 2])
+        hi = np.where(hit & inside, mid, hi)
+        lo = np.where(hit & ~inside, mid, lo)
+    t = np.where(hit, hi, t_floor)
+    return t, hit
 
-    img = Image.fromarray(arr.astype(np.uint8))
-    # 얕은 피사계 심도: 위·아래 가장자리를 흐리게
-    blurred = img.filter(ImageFilter.GaussianBlur(4))
-    focus = np.abs((y / h) - rng.uniform(0.42, 0.52)) * 2
-    focus_mask = np.clip((focus - 0.45) * 2.2, 0, 1)
-    img = Image.composite(blurred, img, Image.fromarray((focus_mask * 255).astype(np.uint8)))
 
-    # 센서 노이즈
-    arr = np.asarray(img).astype(np.float32)
-    lum_noise = rng.normal(0, 3.2, (h, w, 1))
-    chroma_noise = rng.normal(0, 1.2, (h, w, 3))
-    arr = np.clip(arr + lum_noise + chroma_noise, 0, 255).astype(np.uint8)
-    return Image.fromarray(arr)
+def _shade_scene(book, cam, d, t, hit, right_tex, left_tex, rng, light):
+    p = cam + d * t[..., None]
+    x, y, z = p[..., 0], p[..., 1], p[..., 2]
+    H_, W_ = t.shape
+    color = np.zeros((H_, W_, 3), np.float32)
+    normal = np.zeros((H_, W_, 3), np.float32)
+    normal[..., 2] = 1
+
+    eps = 2.5
+    in_x = np.abs(x) <= book.X + 0.5
+    in_y = (y >= -0.5) & (y <= PAGE_H + 0.5)
+    on_top = hit & in_x & in_y & (z >= book.height(x) - eps)
+    on_pages_side = hit & ~on_top & (z > book.cover_t + 0.5) & in_x & in_y
+    on_cover = hit & ~on_top & ~on_pages_side
+    table = ~hit
+
+    # 페이지 윗면
+    s = book.arclen(x)
+    u_r = s
+    u_l = PAGE_W - s
+    tex = np.where((x >= 0)[..., None], _sample(right_tex, u_r, y), _sample(left_tex, u_l, y))
+    color[on_top] = tex[on_top]
+    sl = book.slope(x)
+    n = np.stack([-sl, np.zeros_like(sl), np.ones_like(sl)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    normal[on_top] = n[on_top]
+    # 제본선 깊은 곳의 차폐광(AO)
+    ao = 1 - 0.45 * np.exp(-np.abs(x) / 70) - 0.12 * np.exp(-np.abs(x) / 300)
+
+    # 페이지 단면: 얇은 종이층 줄무늬
+    layer = 0.93 + 0.05 * np.sin(z * 2.7 + np.sin(x * 0.01 + y * 0.01) * 2) + 0.02 * np.sin(z * 9.1)
+    edge_col = np.array([236, 228, 212], np.float32)[None, :] * layer[..., None]
+    color[on_pages_side] = edge_col[on_pages_side]
+    side_n = np.zeros_like(normal)
+    near_x = np.abs(np.abs(x) - book.X) < np.minimum(np.abs(y - PAGE_H), np.abs(y))
+    side_n[..., 0] = np.where(near_x, np.sign(x), 0)
+    side_n[..., 1] = np.where(near_x, 0, np.where(y > PAGE_H / 2, 1, -1))
+    normal[on_pages_side] = side_n[on_pages_side]
+
+    # 표지
+    cover_col = np.array(COVER_COLORS[rng.integers(len(COVER_COLORS))], np.float32)
+    cv = cover_col * (0.96 + 0.04 * _smooth_noise(H_, W_, (H_ // 20, W_ // 20), rng))[..., None]
+    color[on_cover] = cv[on_cover]
+
+    # 책상
+    color[table] = _wood_or_fabric(x[table], y[table], rng)
+
+    # --- 조명 ---
+    L = light / np.linalg.norm(light)
+    lambert = np.clip((normal * L).sum(-1), 0, 1)
+    shade = 0.42 + 0.68 * lambert
+    shade = np.where(on_top, shade * ao, shade)
+
+    # 책이 책상에 드리우는 그림자 (빛 방향으로 광선을 쏴서 책에 막히는지)
+    shadow = np.zeros(t.shape, np.float32)
+    pt = p[table]
+    blocked = np.zeros(len(pt), bool)
+    for k in range(1, 13):
+        q = pt + L * (book.top / L[2] * (k / 12))
+        blocked |= book.solid(q[:, 0], q[:, 1], q[:, 2])
+    shadow[table] = blocked
+    sh_img = Image.fromarray((shadow * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(W_ / 90))
+    shadow = np.asarray(sh_img, np.float32) / 255
+    # 책 바로 옆 접촉 그림자
+    contact = Image.fromarray((hit * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(W_ / 160))
+    contact = np.asarray(contact, np.float32) / 255
+    shade = np.where(table, shade * (1 - 0.45 * shadow) * (1 - 0.35 * contact), shade)
+
+    # 빛이 넓게 퍼지는 실내광: 화면에서 한쪽이 더 밝음
+    lx, ly = rng.uniform(-0.3, 1.3), rng.uniform(-0.3, 0.4)
+    gy, gx = np.mgrid[0:H_, 0:W_].astype(np.float32)
+    falloff = 1.08 - 0.30 * np.sqrt((gx / W_ - lx) ** 2 + (gy / H_ - ly) ** 2)
+    shade *= falloff
+
+    # 폰이나 손이 드리운 아주 부드러운 그림자 (가끔)
+    if rng.random() < 0.55:
+        cx, cy = rng.uniform(-0.1, 1.1) * W_, rng.uniform(0.75, 1.25) * H_
+        r = rng.uniform(0.35, 0.6) * W_
+        blob = np.exp(-(((gx - cx) / r) ** 2 + ((gy - cy) / (r * 0.8)) ** 2) * 1.5)
+        shade *= 1 - rng.uniform(0.12, 0.25) * blob
+
+    # 창문으로 들어오는 햇빛 (창살 그림자가 책과 책상에 부드럽게 걸침)
+    if rng.random() < 0.45:
+        xw = x - z * L[0] / L[2]
+        yw = y - z * L[1] / L[2]
+        ang = rng.uniform(-0.6, 0.6)
+        a_ = xw * math.cos(ang) + yw * math.sin(ang)
+        b_ = -xw * math.sin(ang) + yw * math.cos(ang)
+        pane = rng.uniform(700, 1300)
+        bar = rng.uniform(0.06, 0.12)
+        fa = np.abs(((a_ + rng.uniform(0, pane)) / pane) % 1 - 0.5) * 2
+        fb = np.abs(((b_ + rng.uniform(0, pane)) / (pane * 1.4)) % 1 - 0.5) * 2
+        soft = 0.12
+        win = np.clip((1 - bar - fa) / soft, 0, 1) * np.clip((1 - bar - fb) / soft, 0, 1)
+        # 창문 밖으로 벗어난 영역은 그늘
+        cx_, cy_ = rng.uniform(0.2, 0.8) * book.X, rng.uniform(0.2, 0.8) * PAGE_H
+        reach = rng.uniform(1300, 2200)
+        win *= np.clip(1.6 - np.hypot(xw - cx_, yw - cy_) / reach, 0, 1)
+        shade *= 0.8 + 0.32 * win
+        warm = np.stack([1 + 0.06 * win, 1 + 0.02 * win, 1 - 0.05 * win], -1)
+    else:
+        warm = 1.0
+
+    # 종이가 미세하게 울어서 생기는 명암 변화
+    wav = _smooth_noise(H_, W_, (H_ // 160, W_ // 160), rng)
+    shade = np.where(on_top, shade * (0.97 + 0.06 * wav), shade)
+
+    light_col = np.array([1.0, 0.97, 0.92]) if rng.random() < 0.6 else np.array([0.97, 0.98, 1.0])
+    img = color * shade[..., None] * light_col * warm
+    return img, t
+
+
+def _depth_of_field(img, t, focus_t, strength):
+    """거리(t)에 따라 흐림 정도를 다르게 (여러 단계 블러를 섞음)."""
+    coc = np.abs(1 / t - 1 / focus_t) * focus_t * strength
+    levels = [0, 1.2, 2.5, 4.5, 8.0]
+    src = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
+    stack = [img] + [np.asarray(src.filter(ImageFilter.GaussianBlur(r)), np.float32) for r in levels[1:]]
+    out = np.zeros_like(img)
+    wsum = np.zeros(t.shape, np.float32)
+    for i, r in enumerate(levels):
+        lo = levels[i - 1] if i > 0 else r - 1
+        hi = levels[i + 1] if i < len(levels) - 1 else r + 100
+        w = np.where(coc <= r, np.clip((coc - lo) / max(r - lo, 1e-3), 0, 1),
+                     np.clip((hi - coc) / max(hi - r, 1e-3), 0, 1))
+        if i == 0:
+            w = np.where(coc <= 0, 1, w)
+        out += stack[i] * w[..., None]
+        wsum += w
+    return out / np.maximum(wsum, 1e-3)[..., None]
+
+
+def _phone_postprocess(img, rng):
+    h, w = img.shape[:2]
+    # 화이트밸런스 & 노출
+    wb = np.array([rng.uniform(1.0, 1.05), 1.0, rng.uniform(0.88, 0.97)], np.float32)
+    img = img * wb * rng.uniform(1.0, 1.1)
+    # 렌즈 비네팅
+    gy, gx = np.mgrid[0:h, 0:w].astype(np.float32)
+    r2 = ((gx - w / 2) / (w / 2)) ** 2 + ((gy - h / 2) / (h / 2)) ** 2
+    img *= (1 - 0.13 * r2)[..., None]
+    # 톤커브 (폰 특유의 부드러운 S커브, 하이라이트 압축)
+    x = np.clip(img / 255, 0, 1.2)
+    x = x / (1 + 0.18 * x)
+    x = x / (1 / 1.18)
+    x = np.clip(x, 0, 1)
+    x = x + 0.06 * np.sin(2 * math.pi * x) * (1 - x) * 0.8
+    img = np.clip(x, 0, 1) * 255
+    # 색수차: 가장자리에서 R/B 채널이 살짝 어긋남
+    pil = Image.fromarray(img.astype(np.uint8))
+    r, g, b = pil.split()
+    s = 1.0015
+    r = r.resize((int(w * s), int(h * s)), Image.BICUBIC).crop(
+        ((int(w * s) - w) // 2, (int(h * s) - h) // 2, (int(w * s) - w) // 2 + w, (int(h * s) - h) // 2 + h))
+    pil = Image.merge("RGB", (r, g, b))
+    # 축소 + 폰 샤프닝
+    pil = pil.resize((OUT_W, OUT_H), Image.LANCZOS)
+    pil = pil.filter(ImageFilter.UnsharpMask(radius=1.4, percent=70, threshold=2))
+    # 센서 노이즈 (어두운 곳일수록 많게) + 노이즈 제거로 뭉개진 질감
+    arr = np.asarray(pil, np.float32)
+    lum = arr.mean(-1, keepdims=True) / 255
+    sigma = 1.6 + 3.0 * (1 - lum)
+    noise = rng.normal(0, 1, (OUT_H, OUT_W, 1)) * sigma + rng.normal(0, 0.8, (OUT_H, OUT_W, 3))
+    noise_img = Image.fromarray(np.clip(noise * 8 + 128, 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.6))
+    noise = (np.asarray(noise_img, np.float32) - 128) / 8
+    arr = np.clip(arr + noise, 0, 255)
+    return Image.fromarray(arr.astype(np.uint8))
 
 
 def render_photo(passage, out_path, seed=None, filler_text=None):
     """passage(dict) → 책 사진 JPEG 파일 생성. 경로를 반환합니다.
 
-    filler_text: 흐릿하게 보이는 왼쪽 페이지에 깔 글 (없으면 본문을 재사용)
+    filler_text: 왼쪽 페이지에 깔 글 (없으면 본문을 재사용)
     """
     ensure_fonts()
     if seed is None:
         seed = int(hashlib.md5(passage["id"].encode()).hexdigest()[:8], 16) + random.randint(0, 10_000)
     rng = np.random.default_rng(seed)
-    page = render_page(passage, rng)
-    book, gutter = build_open_book(page, rng, filler_text or passage["text"])
-    photo = photograph(book, gutter, rng)
+
+    tone = PAPER_TONES[rng.integers(len(PAPER_TONES))]
+    page_no = int(rng.integers(17, 289)) | 1          # 오른쪽 페이지는 홀수
+    filler = {"book": passage["book"], "author": passage["author"],
+              "text": ((filler_text or passage["text"]).replace("\n", " ") + " ") * 4}
+    _, back_ink = _typeset(filler, rng, page_no + 1, filler_mode=True)
+    right_tex, right_ink = render_page(passage, rng, tone, page_no, back_ink=back_ink)
+    left_tex, _ = render_page(filler, rng, tone, page_no - 1, back_ink=right_ink, filler_mode=True)
+
+    W, H = int(OUT_W * SS), int(OUT_H * SS)
+    book = Book(rng)
+    cam, d, dist = _camera_rays(rng, book, W, H)
+    t, hit = _march(book, cam, d)
+    light = np.array([rng.uniform(-0.6, 0.6), rng.uniform(-0.7, -0.1), 1.0])
+    img, t = _shade_scene(book, cam, d, t, hit, right_tex, left_tex, rng, light)
+
+    focus_t = float(np.median(t[H // 2 - 20: H // 2 + 20, W // 2 - 20: W // 2 + 20]))
+    img = _depth_of_field(img, t, focus_t, strength=rng.uniform(7, 13) * SS)
+    photo = _phone_postprocess(img, rng)
+
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    photo.save(out_path, "JPEG", quality=92, subsampling=0)
+    photo.save(out_path, "JPEG", quality=int(rng.integers(84, 92)))
     return out_path
